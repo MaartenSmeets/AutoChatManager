@@ -1,6 +1,6 @@
 api_url: "http://localhost:11434/api/generate"  # Replace with your Ollama API endpoint
 api_url_embeddings: "http://localhost:11434/api/embeddings"  # Replace with your Ollama API endpoint
-model_name: "DaddyLLAMA/behemoth_123b_v1_1:latest"  # Specify the model version
+model_name: "dolphin-mixtral:8x22b-v2.9-q3_K_S"  # Specify the model version
 embedding_model_name: "snowflake-arctic-embed2"  # Specify the embedding model version
 api_key: ""  # Optional: Include if authentication is required
 max_retries: 3  # Number of retries for LLM requests
