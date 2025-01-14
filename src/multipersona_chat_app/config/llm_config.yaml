@@ -1,0 +1,9 @@
+api_url: "http://localhost:11434/api/generate"  # Replace with your Ollama API endpoint
+api_url_embeddings: "http://localhost:11434/api/embeddings"  # Replace with your Ollama API endpoint
+model_name: "DaddyLLAMA/behemoth_123b_v1_1:latest"  # Specify the model version
+embedding_model_name: "snowflake-arctic-embed2"  # Specify the embedding model version
+api_key: ""  # Optional: Include if authentication is required
+max_retries: 3  # Number of retries for LLM requests
+temperature: 0.85  # Default temperature
+max_context_length: 128256  # Max context length before summarizing
+timeout: 300  # Timeout for LLM requests
