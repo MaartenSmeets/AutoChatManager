@@ -46,7 +46,7 @@ class CharacterPlan(BaseModel):
     why_new_plan_goal: str = ""
 
 class ChatManager:
-    def __init__(self, session_id: Optional[str] = None, settings: List[Dict] = []):
+    def __init__(self, session_id: Optional[str] = None, settings: List[Dict] = [], llm_client: Optional[OllamaClient] = None):
         self.characters: Dict[str, Character] = {}
         self.turn_index = 0
         self.automatic_running = False
@@ -114,6 +114,9 @@ class ChatManager:
                 else:
                     self.current_setting = None
                     logger.error("No matching stored setting and no default setting found. No setting applied.")
+
+        # Store the llm_client reference so we can use or propagate user-selected model
+        self.llm_client = llm_client
 
     @staticmethod
     def load_config(config_path: str) -> dict:
@@ -296,7 +299,10 @@ class ChatManager:
                 await self.summarize_history_for_character(char_name)
 
     async def summarize_history_for_character(self, character_name: str):
+        # Create or use a local OllamaClient but ensure user-selected model is propagated
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+        if self.llm_client:
+            summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -372,7 +378,10 @@ class ChatManager:
         await self.combine_summaries_if_needed(character_name)
 
     async def combine_summaries_if_needed(self, character_name: str):
+        # Also ensure user-selected model is used here
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+        if self.llm_client:
+            summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
         while True:
             all_summary_records = self.db.get_all_summaries_records(self.session_id, character_name)
@@ -560,9 +569,13 @@ class ChatManager:
 
         try:
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
-            llm_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
+            # Create a new OllamaClient for this generation, ensure user-selected model is used
+            llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
+            if self.llm_client:
+                llm.set_user_selected_model(self.llm_client.user_selected_model)
+
             interaction = await asyncio.to_thread(
-                llm_client.generate,
+                llm.generate,
                 prompt=formatted_prompt,
                 system=system_prompt,
                 use_cache=False
@@ -652,6 +665,9 @@ class ChatManager:
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=LocationUpdate
             )
+            if self.llm_client:
+                location_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
             system_prompt = LOCATION_UPDATE_SYSTEM_PROMPT.format(
                 character_name=character_name,
                 moral_guidelines=self.moral_guidelines
@@ -741,6 +757,9 @@ class ChatManager:
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=AppearanceUpdate
             )
+            if self.llm_client:
+                appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
             system_prompt = APPEARANCE_UPDATE_SYSTEM_PROMPT.format(
                 character_name=character_name,
                 moral_guidelines=self.moral_guidelines
@@ -856,10 +875,15 @@ class ChatManager:
     async def generate_character_introduction_message(self, character_name: str):
         logger.info(f"Building introduction prompts for character: {character_name}")
         system_prompt, introduction_prompt = self.build_introduction_prompts_for_character(character_name)
+
+        # Create new client for introduction, ensure user-selected model is used
         introduction_llm_client = OllamaClient(
             'src/multipersona_chat_app/config/llm_config.yaml',
             output_model=CharacterIntroductionOutput
         )
+        if self.llm_client:
+            introduction_llm_client.set_user_selected_model(self.llm_client.user_selected_model)
+
         try:
             introduction_response = await asyncio.to_thread(
                 introduction_llm_client.generate,
@@ -914,6 +938,8 @@ class ChatManager:
             config_path='src/multipersona_chat_app/config/llm_config.yaml',
             output_model=CharacterPlan
         )
+        if self.llm_client:
+            plan_client.set_user_selected_model(self.llm_client.user_selected_model)
 
         existing_plan = self.get_character_plan(character_name)
         old_goal = existing_plan.goal
@@ -1026,7 +1052,11 @@ class ChatManager:
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
 
+        # We'll create a new embed_client each time, but ensure user-selected model is used for embeddings
         embed_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+        if self.llm_client:
+            embed_client.set_user_selected_model(self.llm_client.user_selected_model)
+
         tries = 0
         max_tries = self.max_similarity_retries
         current_interaction = interaction
@@ -1118,6 +1148,9 @@ class ChatManager:
 
             revised_prompt = dynamic_prompt + appended_warning
             regen_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
+            if self.llm_client:
+                regen_client.set_user_selected_model(self.llm_client.user_selected_model)
+
             new_interaction = await asyncio.to_thread(
                 regen_client.generate,
                 prompt=revised_prompt,
@@ -1174,6 +1207,9 @@ class ChatManager:
 
             # 1) LOCATION
             location_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+            if self.llm_client:
+                location_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
             location_system = LOCATION_FROM_SCRATCH_SYSTEM_PROMPT.format(
                 setting_name=setting_name,
                 setting_description=setting_description,
@@ -1213,6 +1249,9 @@ class ChatManager:
 
             # 2) APPEARANCE
             appearance_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+            if self.llm_client:
+                appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
             appearance_system = APPEARANCE_FROM_SCRATCH_SYSTEM_PROMPT.format(
                 character_name=c_name,
                 character_description=character_description,

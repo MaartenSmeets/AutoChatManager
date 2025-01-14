@@ -1,5 +1,3 @@
-# File: /home/maarten/multi_persona_chatbot/src/multipersona_chat_app/ui/app.py
-
 import os
 import uuid
 import asyncio
@@ -56,20 +54,23 @@ def consume_notifications():
 
 
 def init_chat_manager(session_id: str, settings: List[Dict]):
+    """
+    Initialize the global ChatManager with the given session_id and settings.
+    Also create global LLM clients, ensuring we share the user-selected model 
+    across the entire application code.
+    """
     global chat_manager, llm_client, introduction_llm_client
-    chat_manager = ChatManager(session_id=session_id, settings=settings)
-    try:
-        llm_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
-    except Exception as e:
-        logger.error(f"Error initializing LLM Client: {e}")
+    # Main client used for normal character interactions
+    llm_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
 
-    try:
-        introduction_llm_client = OllamaClient(
-            'src/multipersona_chat_app/config/llm_config.yaml',
-            output_model=CharacterIntroductionOutput
-        )
-    except Exception as e:
-        logger.error(f"Error initializing Introduction LLM Client: {e}")
+    # A second client for introduction outputs (kept for structured output usage)
+    introduction_llm_client = OllamaClient(
+        'src/multipersona_chat_app/config/llm_config.yaml',
+        output_model=CharacterIntroductionOutput
+    )
+
+    # Create ChatManager, passing in the main llm_client so it can propagate the user-selected model
+    chat_manager = ChatManager(session_id=session_id, settings=settings, llm_client=llm_client)
 
 
 def refresh_added_characters():
@@ -452,23 +453,35 @@ async def refresh_local_models():
     if not llm_client:
         return
     models = llm_client.list_local_models()
-    if models:
-        local_model_dropdown.options = models
-    else:
-        local_model_dropdown.options = []
+    local_model_dropdown.options = models
     local_model_dropdown.update()
+    # If we have at least one model, select the first by default
+    if models:
+        local_model_dropdown.value = models[0]
+        local_model_dropdown.update()
+        # This ensures the on_change callback triggers with the default
+        on_local_model_select({"value": models[0]})
 
 
 def on_local_model_select(event):
     """
-    When user picks a local model, set it on the LLM client.
+    When user picks a local model, set it on the global LLM client.
     If user picks an empty value, revert to config model.
     """
-    chosen = event.value
+    # Extract chosen value depending on the type of 'event'
+    if isinstance(event, dict):
+        chosen = event.get('value')
+    else:
+        chosen = event.value
+
     if not chosen:
         llm_client.set_user_selected_model(None)
+        # Also set introduction client if used
+        introduction_llm_client.set_user_selected_model(None)
         return
+
     llm_client.set_user_selected_model(chosen)
+    introduction_llm_client.set_user_selected_model(chosen)
 
 
 def main_page():
@@ -579,6 +592,7 @@ def main_page():
     auto_timer = ui.timer(interval=2.0, callback=lambda: asyncio.create_task(automatic_conversation()), active=False)
 
     ui.timer(1.0, consume_notifications, active=True)
+    ui.timer(0.5, refresh_local_models, active=True, once=True)
 
 
 def start_ui():
