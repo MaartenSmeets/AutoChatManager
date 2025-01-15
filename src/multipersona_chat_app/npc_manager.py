@@ -87,9 +87,8 @@ class NPCManager:
         Return the boolean from "same_location".
         """
         system_prompt = (
-            "You are an assistant checking if two location descriptions refer to the same or nearly the same place,\n"
-            "given a certain setting context. If they are likely describing the same or adjacent area that would\n"
-            "functionally be the same place in that setting, respond true.\n"
+            "You are an assistant checking if two location descriptions could refer to the same or nearly the same place,\n"
+            "given a certain setting context. If they are possibly describing the same or adjacent area, respond true.\n"
             "Respond in valid JSON only, with a single key 'same_location' set to true or false.\n"
             "No extra text.\n"
             f"Setting context: {setting_desc}\n"

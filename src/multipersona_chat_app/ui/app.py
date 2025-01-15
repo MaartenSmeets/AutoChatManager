@@ -561,10 +561,10 @@ def main_page():
                 added_characters_container = ui.row().classes('flex-wrap gap-2')
                 refresh_added_characters()
 
-            # Automatic Chat toggle
             with ui.row().classes('w-full items-center mb-4'):
                 auto_switch = ui.switch('Automatic Chat', value=False, on_change=toggle_automatic_chat).classes('mr-2')
-                ui.button("Stop", on_click=lambda: chat_manager.stop_automatic_chat()).classes('ml-auto')
+                npc_switch = ui.switch('NPC Manager Active', value=True, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
+
 
             global next_speaker_label
             next_speaker_label = ui.label("Next speaker:")
@@ -581,10 +581,7 @@ def main_page():
                 on_click=lambda: asyncio.create_task(update_all_characters_info())
             ).classes('mt-4 bg-green-500 text-white')
 
-            # Add a toggle for NPC manager:
-            with ui.row().classes('w-full items-center mb-4'):
-                npc_switch = ui.switch('NPC Manager Active', value=False, on_change=lambda e: toggle_npc_manager(e.value))
-                npc_switch.classes('mr-2')
+
 
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600')
