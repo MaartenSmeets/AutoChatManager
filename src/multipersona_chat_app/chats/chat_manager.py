@@ -5,6 +5,7 @@ from models.character import Character
 from db.db_manager import DBManager
 from llm.ollama_client import OllamaClient
 from datetime import datetime
+from npc_manager import NPCManager
 import yaml
 from templates import (
     INTRODUCTION_TEMPLATE,
@@ -117,6 +118,18 @@ class ChatManager:
 
         # Store the llm_client reference so we can use or propagate user-selected model
         self.llm_client = llm_client
+
+        self.npc_manager_active = False  # You can toggle this from the UI
+        self.last_npc_check_msg_id = 0   # track up to which message we've checked
+
+        npc_config_path = os.path.join("src", "multipersona_chat_app", "config", "npc_manager_config.yaml")
+        self.npc_manager = NPCManager(
+            session_id=self.session_id,
+            db=self.db,
+            llm_client=llm_client,
+            config_path=npc_config_path
+        )
+
 
     @staticmethod
     def load_config(config_path: str) -> dict:
@@ -281,9 +294,27 @@ class ChatManager:
             emotion,
             thoughts
         )
+        # Mark visible for all session characters + npcs
         self.db.add_message_visibility_for_session_characters(self.session_id, message_id)
+
+        # After each new message, we can check if we need to do NPC logic
+        if self.npc_manager_active:
+            self.last_npc_check_msg_id = await self.npc_manager.check_npc_interactions(
+                current_setting_description=(self.current_setting_description or ""),
+                last_checked_msg_id=self.last_npc_check_msg_id
+            )
+
+        # Summaries for full-blown characters
         await self.check_summarization()
         return message_id
+
+    def enable_npc_manager(self):
+        self.npc_manager_active = True
+        logger.info("NPC Manager has been enabled.")
+
+    def disable_npc_manager(self):
+        self.npc_manager_active = False
+        logger.info("NPC Manager has been disabled.")
 
     async def check_summarization(self):
         all_msgs = self.db.get_messages(self.session_id)

@@ -484,6 +484,12 @@ def on_local_model_select(event):
     introduction_llm_client.set_user_selected_model(chosen)
 
 
+def toggle_npc_manager(value: bool):
+    if value:
+        chat_manager.enable_npc_manager()
+    else:
+        chat_manager.disable_npc_manager()
+
 def main_page():
     global character_dropdown, added_characters_container
     global next_speaker_label, next_button, settings_dropdown, setting_description_label
@@ -574,6 +580,11 @@ def main_page():
                 "Update All Characters Info (Location & Appearance)",
                 on_click=lambda: asyncio.create_task(update_all_characters_info())
             ).classes('mt-4 bg-green-500 text-white')
+
+            # Add a toggle for NPC manager:
+            with ui.row().classes('w-full items-center mb-4'):
+                npc_switch = ui.switch('NPC Manager Active', value=False, on_change=lambda e: toggle_npc_manager(e.value))
+                npc_switch.classes('mr-2')
 
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600')

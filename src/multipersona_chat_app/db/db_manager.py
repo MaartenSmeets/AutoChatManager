@@ -206,9 +206,119 @@ class DBManager:
             )
         ''')
 
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS session_npcs (
+                session_id TEXT NOT NULL,
+                npc_name TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                appearance TEXT NOT NULL,
+                location TEXT NOT NULL,
+                PRIMARY KEY (session_id, npc_name)
+            )
+        ''')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS npc_summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                npc_name TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                covered_up_to_message_id INTEGER,
+                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+            )
+        ''')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS npc_message_visibility (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                npc_name TEXT NOT NULL,
+                message_id INTEGER NOT NULL,
+                visible INTEGER DEFAULT 1,
+                FOREIGN KEY(session_id) REFERENCES sessions(session_id),
+                FOREIGN KEY(message_id) REFERENCES messages(id)
+            )
+        ''')
+
         conn.commit()
         conn.close()
-        logger.info("Database initialized or confirmed with up-to-date schema.")
+        logger.info("Database initialized or confirmed with up-to-date schema (including NPC tables).")
+
+    def add_npc_to_session(self, session_id: str, npc_name: str, purpose: str, appearance: str, location: str):
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT OR IGNORE INTO session_npcs (session_id, npc_name, purpose, appearance, location)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (session_id, npc_name, purpose, appearance, location))
+        conn.commit()
+        conn.close()
+
+
+    def get_all_npcs_in_session(self, session_id: str) -> List[str]:
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT npc_name FROM session_npcs
+            WHERE session_id = ?
+        ''', (session_id,))
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+
+    def get_npc_data(self, session_id: str, npc_name: str) -> Optional[Dict[str, str]]:
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT purpose, appearance, location
+            FROM session_npcs
+            WHERE session_id = ? AND npc_name = ?
+        ''', (session_id, npc_name))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {
+                "purpose": row[0],
+                "appearance": row[1],
+                "location": row[2]
+            }
+        return None
+
+
+    def get_visible_messages_for_npc(self, session_id: str, npc_name: str) -> List[Dict[str, Any]]:
+        """
+        Return messages that are still 'visible' for this NPC, in ascending order.
+        This is analogous to get_visible_messages_for_character, but for NPC.
+        """
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT m.id, m.sender, m.message, nmv.visible, m.message_type,
+                m.emotion, m.thoughts, m.created_at
+            FROM messages m
+            JOIN npc_message_visibility nmv ON m.id = nmv.message_id
+            WHERE nmv.session_id = ?
+            AND nmv.npc_name = ?
+            AND nmv.visible = 1
+            ORDER BY m.id ASC
+        ''', (session_id, npc_name))
+        rows = c.fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            result.append({
+                'id': row[0],
+                'sender': row[1],
+                'message': row[2],
+                'visible': bool(row[3]),
+                'message_type': row[4],
+                'emotion': row[5],
+                'thoughts': row[6],
+                'created_at': row[7],
+            })
+        return result
+
 
     # --- New getters/setters for the session-level setting description ---
     def get_current_setting_description(self, session_id: str) -> Optional[str]:
@@ -622,6 +732,7 @@ class DBManager:
         return message_id
 
     def add_message_visibility_for_session_characters(self, session_id: str, message_id: int):
+        # Register visibility for all session characters and NPCs for the given message.
         chars = self.get_session_characters(session_id)
         conn = self._ensure_connection()
         c = conn.cursor()
@@ -630,6 +741,92 @@ class DBManager:
                 INSERT INTO message_visibility (session_id, character_name, message_id, visible)
                 VALUES (?, ?, ?, ?)
             ''', (session_id, char, message_id, 1))
+        all_npcs = self.get_all_npcs_in_session(session_id)
+        for npc in all_npcs:
+            c.execute('''
+                INSERT INTO npc_message_visibility (session_id, npc_name, message_id, visible)
+                VALUES (?, ?, ?, ?)
+            ''', (session_id, npc, message_id, 1))
+        conn.commit()
+        conn.close()
+
+
+    def hide_messages_for_npc(self, session_id: str, npc_name: str, message_ids: List[int]):
+        if not message_ids:
+            return
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(message_ids))
+        params = [session_id, npc_name] + message_ids
+        c.execute(f'''
+            UPDATE npc_message_visibility
+            SET visible = 0
+            WHERE session_id = ?
+            AND npc_name = ?
+            AND message_id IN ({placeholders})
+        ''', params)
+        conn.commit()
+        conn.close()
+
+
+    def save_new_npc_summary(self, session_id: str, npc_name: str, summary: str, covered_up_to_message_id: int):
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO npc_summaries (session_id, npc_name, summary, covered_up_to_message_id)
+            VALUES (?, ?, ?, ?)
+        ''', (session_id, npc_name, summary, covered_up_to_message_id))
+        conn.commit()
+        conn.close()
+
+
+    def get_all_npc_summaries(self, session_id: str, npc_name: str) -> List[str]:
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT summary FROM npc_summaries
+            WHERE session_id = ? AND npc_name = ?
+            ORDER BY id ASC
+        ''', (session_id, npc_name))
+        rows = c.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+
+    def get_all_npc_summaries_records(self, session_id: str, npc_name: str) -> List[Dict[str, Any]]:
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT id, summary, covered_up_to_message_id
+            FROM npc_summaries
+            WHERE session_id = ? AND npc_name = ?
+            ORDER BY id ASC
+        ''', (session_id, npc_name))
+        rows = c.fetchall()
+        conn.close()
+        out = []
+        for row in rows:
+            out.append({
+                'id': row[0],
+                'summary': row[1],
+                'covered_up_to_message_id': row[2] if row[2] else 0
+            })
+        return out
+
+
+    def delete_npc_summaries_by_ids(self, session_id: str, npc_name: str, summary_ids: List[int]):
+        if not summary_ids:
+            return
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        placeholders = ",".join("?" * len(summary_ids))
+        params = [session_id, npc_name] + summary_ids
+        c.execute(f'''
+            DELETE FROM npc_summaries
+            WHERE session_id = ?
+            AND npc_name = ?
+            AND id IN ({placeholders})
+        ''', params)
         conn.commit()
         conn.close()
 
