@@ -8,14 +8,23 @@ import yaml
 
 from db.db_manager import DBManager
 from llm.ollama_client import OllamaClient
-from models.interaction import Interaction
-from models.interaction import AppearanceSegments
+from models.interaction import Interaction, AppearanceSegments, LocationUpdate, AppearanceUpdate
 from npc_prompts import (
     NPC_CREATION_SYSTEM_PROMPT,
     NPC_CREATION_USER_PROMPT,
+    NPC_INTRO_SYSTEM_PROMPT,
+    NPC_INTRO_USER_PROMPT,
     NPC_REPLY_SYSTEM_PROMPT,
     NPC_REPLY_USER_PROMPT
 )
+from templates import (
+    LOCATION_UPDATE_SYSTEM_PROMPT,
+    LOCATION_UPDATE_CONTEXT_TEMPLATE,
+    APPEARANCE_UPDATE_SYSTEM_PROMPT,
+    APPEARANCE_UPDATE_CONTEXT_TEMPLATE,
+)
+# --- ADDED IMPORT FOR MARKDOWN REMOVAL ---
+from utils import remove_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +52,13 @@ class NPCMemorySummary(BaseModel):
     covered_up_to_message_id: int
 
 
+#
+# NEW: Pydantic model to parse location check results { "same_location": bool }
+#
+class SameLocationCheck(BaseModel):
+    same_location: bool
+
+
 class NPCManager:
     def __init__(self, session_id: str, db: DBManager, llm_client: OllamaClient, config_path: str):
         self.session_id = session_id
@@ -64,27 +80,31 @@ class NPCManager:
             logger.error(f"Error loading NPC manager config: {e}")
             return {}
 
-    async def is_same_location_llm(self, loc1: str, loc2: str) -> bool:
+    async def is_same_location_llm(self, loc1: str, loc2: str, setting_desc: str) -> bool:
         """
-        Determine via an LLM call if loc1 and loc2 refer to the same location.
-        Return True or False based on a JSON response { "same_location": true/false }.
+        Determine via an LLM call if loc1 and loc2 refer to the same (or nearly the same) location,
+        given the overall setting context. We parse structured JSON { "same_location": true|false }.
+        Return the boolean from "same_location".
         """
-        # Prepare a system prompt that simply instructs the LLM to answer in strict JSON
         system_prompt = (
-            "You are an assistant checking if two location descriptions refer to the exact same place.\n"
-            "Respond in valid JSON only, with a single key same_location set to true or false.\n"
+            "You are an assistant checking if two location descriptions refer to the same or nearly the same place,\n"
+            "given a certain setting context. If they are likely describing the same or adjacent area that would\n"
+            "functionally be the same place in that setting, respond true.\n"
+            "Respond in valid JSON only, with a single key 'same_location' set to true or false.\n"
             "No extra text.\n"
+            f"Setting context: {setting_desc}\n"
         )
-        # The user prompt includes the two location strings
         user_prompt = (
             f"Location A:\n{loc1}\n\n"
             f"Location B:\n{loc2}\n\n"
-            "Do they describe the same place?"
+            "Do they describe essentially the same or nearly the same place in that setting?\n"
+            "Return JSON like {\"same_location\": true} or {\"same_location\": false}."
         )
 
-        # Create a new client for this check, or reuse config
+        # Use an OllamaClient with the SameLocationCheck output model
         checker_client = OllamaClient(
-            'src/multipersona_chat_app/config/llm_config.yaml'
+            'src/multipersona_chat_app/config/llm_config.yaml',
+            output_model=SameLocationCheck
         )
         if self.llm_client.user_selected_model:
             checker_client.set_user_selected_model(self.llm_client.user_selected_model)
@@ -95,16 +115,10 @@ class NPCManager:
             system=system_prompt,
             use_cache=False
         )
-        if not response_text or not isinstance(response_text, str):
+        if not response_text or not isinstance(response_text, SameLocationCheck):
             return False
 
-        # Attempt to parse the JSON {"same_location": true/false}
-        try:
-            data = json.loads(response_text)
-            return bool(data.get("same_location", False))
-        except Exception as e:
-            logger.warning(f"Failed to parse location check LLM output: {response_text} (Error: {e})")
-            return False
+        return response_text.same_location
 
     async def check_npc_interactions(
         self,
@@ -115,41 +129,53 @@ class NPCManager:
         Main entry point to check new messages (after last_checked_msg_id) to:
          1) Determine if a new NPC is needed
          2) Generate that NPC if needed and store
-         3) Check if any existing NPC wants to respond
+         3) *After processing all new messages*, check if any existing NPC wants to respond (only once)
          4) Summarize NPC memory if needed
+
         Returns the new 'last_checked_msg_id' after processing all relevant messages.
         """
         all_msgs = self.db.get_messages(self.session_id)
-        new_messages = [m for m in all_msgs if m['id'] > last_checked_msg_id and m['message_type'] in ['user', 'character']]
+        new_messages = [
+            m for m in all_msgs
+            if m['id'] > last_checked_msg_id and m['message_type'] in ['user', 'character']
+        ]
         if not new_messages:
             return last_checked_msg_id
 
         new_messages.sort(key=lambda x: x['id'])
 
-        # We'll iterate message by message
+        # Keep track of newly created NPCs so we skip them for an immediate second reply
+        just_created_npcs = []
+
+        # --- STEP 1 & 2: For each new message, handle potential NPC creation ---
         for msg in new_messages:
             relevant_lines = await self.get_relevant_recent_lines(msg['id'], self.recent_dialogue_lines)
-            # Step 1: Check if new NPC needed
-            await self.handle_npc_creation_if_needed(relevant_lines, current_setting_description)
+            newly_created_npc = await self.handle_npc_creation_if_needed(relevant_lines, current_setting_description)
+            if newly_created_npc:
+                just_created_npcs.append(newly_created_npc)
 
-            # Step 2: For each NPC, see if they need to respond
-            all_npcs = self.db.get_all_npcs_in_session(self.session_id)
-            for npc_name in all_npcs:
-                await self.process_npc_reply(npc_name)
+        # --- STEP 3: Let each NPC respond only once for this batch of new messages ---
+        all_npcs = self.db.get_all_npcs_in_session(self.session_id)
+        for npc_name in all_npcs:
+            # Skip a fresh introduction from immediately replying again
+            if npc_name in just_created_npcs:
+                logger.info(f"Skipping immediate reply for newly introduced NPC: {npc_name}")
+                continue
+            await self.process_npc_reply(npc_name, current_setting_description)
 
-        if new_messages:
-            last_checked_msg_id = new_messages[-1]['id']
+        last_checked_msg_id = new_messages[-1]['id']
 
-        # Summaries or merges if needed, per NPC
+        # --- STEP 4: Summaries if needed ---
         await self.maybe_summarize_npc_memory()
-
         return last_checked_msg_id
 
-    async def handle_npc_creation_if_needed(self, recent_lines: List[str], setting_desc: str):
+    async def handle_npc_creation_if_needed(self, recent_lines: List[str], setting_desc: str) -> Optional[str]:
         """
         Calls the LLM to check if we should create a new NPC based on recent lines.
-        If so, create it, store in DB, and store the introduction message as a normal NPC line.
-        We've removed the strict filter that required direct mention of the NPC name/purpose.
+        If so, create it, store in DB, then immediately generate a short LLM-based introduction
+        with action and dialogue, stored as a normal NPC line.
+
+        Returns the newly created NPC's name if created, otherwise None.
         """
         known_npcs = self.db.get_all_npcs_in_session(self.session_id)
         lines_for_prompt = "\n".join(recent_lines)
@@ -176,13 +202,13 @@ class NPCManager:
             use_cache=False
         )
         if not creation_result or not isinstance(creation_result, NPCCreationOutput):
-            return
+            return None
 
         if creation_result.should_create_npc and creation_result.npc_name.strip():
             npc_name = creation_result.npc_name.strip()
             if npc_name in known_npcs:
                 logger.info(f"NPC '{npc_name}' already exists. Skipping creation.")
-                return
+                return None
 
             self.db.add_npc_to_session(
                 self.session_id,
@@ -193,29 +219,64 @@ class NPCManager:
             )
             logger.info(f"New NPC created: {npc_name} | Purpose='{creation_result.npc_purpose}'")
 
-            # Store introduction as if the NPC performed an entrance action + a short line of dialogue
-            introduction_msg = (
-                f"*Soft footsteps announce a newcomer.*\n"
-                f"\"Greetings. I am {npc_name}.\""
+            # Immediately generate an LLM-based introduction (action + dialogue)
+            intro_system_prompt = NPC_INTRO_SYSTEM_PROMPT.format(
+                npc_name=npc_name,
+                npc_purpose=creation_result.npc_purpose,
+                npc_appearance=creation_result.npc_appearance,
+                npc_location=creation_result.npc_location
             )
-            self.db.save_message(
-                session_id=self.session_id,
-                sender=f"NPC: {npc_name}",
-                message=introduction_msg,
-                visible=1,
-                message_type="character",
-                emotion=None,
-                thoughts=None
+            intro_user_prompt = NPC_INTRO_USER_PROMPT.format(
+                recent_lines="\n".join(recent_lines),
+                npc_name=npc_name
             )
-        else:
-            logger.debug("No new NPC creation indicated by LLM or no valid NPC name.")
 
-    async def process_npc_reply(self, npc_name: str):
+            intro_client = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=NPCInteractionOutput
+            )
+            if self.llm_client.user_selected_model:
+                intro_client.set_user_selected_model(self.llm_client.user_selected_model)
+
+            intro_output = await asyncio.to_thread(
+                intro_client.generate,
+                prompt=intro_user_prompt,
+                system=intro_system_prompt,
+                use_cache=False
+            )
+            if intro_output and isinstance(intro_output, NPCInteractionOutput):
+                # Remove markdown from raw outputs
+                intro_output.action = remove_markdown(intro_output.action)
+                intro_output.dialogue = remove_markdown(intro_output.dialogue)
+
+                final_msg = ""
+                if intro_output.action.strip():
+                    final_msg += f"*{intro_output.action.strip()}*\n"
+                if intro_output.dialogue.strip():
+                    final_msg += intro_output.dialogue.strip()
+
+                self.db.save_message(
+                    session_id=self.session_id,
+                    sender=f"NPC: {npc_name}",
+                    message=final_msg,
+                    visible=1,
+                    message_type="character",
+                    emotion=intro_output.emotion.strip() if intro_output.emotion else None,
+                    thoughts=intro_output.thoughts.strip() if intro_output.thoughts else None
+                )
+                logger.info(f"NPC introduction for '{npc_name}': {final_msg}")
+
+            # Return the name of the newly created NPC so we can skip immediate second replies
+            return npc_name
+
+        else:
+            logger.debug("No new NPC creation indicated or no valid NPC name.")
+            return None
+
+    async def process_npc_reply(self, npc_name: str, setting_desc: str):
         """
-        Check if the NPC should respond. 
-        We now use an LLM-based check for location equivalence 
-        instead of exact string matching to see which characters are present.
-        Also, we provide an overview of *all* NPCs to the LLM so it can decide.
+        Check if the NPC should respond to recent lines, but only if it shares location with characters.
+        After generating the NPC's new message, handle possible location or appearance changes.
         """
         npc_data = self.db.get_npc_data(self.session_id, npc_name)
         if not npc_data:
@@ -224,20 +285,19 @@ class NPCManager:
         if not npc_location.strip():
             return
 
-        # Gather all session characters and check location equivalence via LLM
+        # Check if any player characters share (or nearly share) location with this NPC
         session_chars = self.db.get_session_characters(self.session_id)
         matching_chars = []
         for c_name in session_chars:
             c_loc = self.db.get_character_location(self.session_id, c_name) or ""
-            same_loc = await self.is_same_location_llm(c_loc, npc_location)
+            same_loc = await self.is_same_location_llm(c_loc, npc_location, setting_desc)
             if same_loc:
                 matching_chars.append(c_name)
 
+        # If no one is around, NPC has no reason to speak
         if not matching_chars:
-            # No character at same place => NPC idle
             return
 
-        # Provide an overview of NPCs to the LLM
         all_npcs = self.db.get_all_npcs_in_session(self.session_id)
         all_npcs_str = ", ".join(all_npcs) if all_npcs else "(none)"
 
@@ -275,6 +335,10 @@ class NPCManager:
         if not result or not isinstance(result, NPCInteractionOutput):
             return
 
+        # Strip/clean markdown from raw LLM outputs:
+        result.action = remove_markdown(result.action)
+        result.dialogue = remove_markdown(result.dialogue)
+
         if result.dialogue.strip() or result.action.strip():
             final_message = ""
             if result.action.strip():
@@ -293,12 +357,233 @@ class NPCManager:
             )
             logger.info(f"{npc_name} responded with: {final_message}")
 
+            # Handle location/appearance changes
             if result.location_change_expected:
-                logger.debug(f"{npc_name} indicated location change. Implement if needed.")
+                logger.debug(f"{npc_name} indicated location change. Now evaluating update.")
+                await self.evaluate_npc_location_update(npc_name)
 
             if result.appearance_change_expected:
-                logger.debug(f"{npc_name} indicated appearance change. Implement if needed.")
+                logger.debug(f"{npc_name} indicated appearance change. Now evaluating update.")
+                await self.evaluate_npc_appearance_update(npc_name)
 
+    #
+    # NEW: Evaluate NPC location change similarly to how it's done for characters
+    #
+    async def evaluate_npc_location_update(self, npc_name: str, visited: Optional[Set[str]] = None):
+        if visited is None:
+            visited = set()
+        if npc_name in visited:
+            return
+        visited.add(npc_name)
+
+        try:
+            location_llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=LocationUpdate
+            )
+            if self.llm_client:
+                location_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
+            system_prompt = LOCATION_UPDATE_SYSTEM_PROMPT.format(
+                character_name=npc_name,
+                moral_guidelines=""  # Not used or can be loaded if needed
+            )
+            dynamic_context = self.build_npc_location_update_context(npc_name)
+            update_response = await asyncio.to_thread(
+                location_llm.generate,
+                prompt=dynamic_context,
+                system=system_prompt,
+                use_cache=False
+            )
+
+            if not update_response or not isinstance(update_response, LocationUpdate):
+                logger.info(f"No location update or invalid data for NPC '{npc_name}'.")
+                return
+
+            new_loc = (update_response.location or "").strip()
+            transition_action = remove_markdown((update_response.transition_action or "").strip())
+            current_location = self.db.get_npc_data(self.session_id, npc_name)['location'] or ""
+
+            # If the new location is the same as old, treat as no change
+            if new_loc == current_location:
+                new_loc = ""
+                transition_action = ""
+
+            # Post a minimal transition action if non-empty
+            if transition_action:
+                self.db.save_message(
+                    session_id=self.session_id,
+                    sender=f"NPC: {npc_name}",
+                    message=f"*{transition_action}*",
+                    visible=1,
+                    message_type="character"
+                )
+
+            if new_loc:
+                # Update DB location for this NPC
+                self.db.add_npc_to_session(
+                    self.session_id,
+                    npc_name,
+                    self.db.get_npc_data(self.session_id, npc_name)['purpose'],
+                    self.db.get_npc_data(self.session_id, npc_name)['appearance'],
+                    new_loc
+                )
+                logger.info(f"NPC '{npc_name}' location updated to '{new_loc}'. Rationale: {update_response.rationale}")
+            else:
+                logger.info(f"No location change for NPC '{npc_name}'. Rationale: {update_response.rationale}")
+
+            # If other_characters are indicated, evaluate them as well
+            for other_npc in update_response.other_characters:
+                if not other_npc:
+                    continue
+                if other_npc not in self.db.get_all_npcs_in_session(self.session_id):
+                    logger.info(f"Ignoring 'other_characters' entry: {other_npc} not an NPC in current session.")
+                    continue
+                if other_npc not in visited:
+                    await self.evaluate_npc_location_update(other_npc, visited=visited)
+
+        except Exception as e:
+            logger.error(f"Error in evaluate_npc_location_update for NPC '{npc_name}': {e}", exc_info=True)
+
+    def build_npc_location_update_context(self, npc_name: str) -> str:
+        # Gather a few recent lines for context
+        visible_history = self.db.get_visible_messages_for_npc(self.session_id, npc_name)
+        relevant_lines = []
+        for m in visible_history[-5:]:
+            relevant_lines.append(f"{m['sender']}: {m['message']}")
+        location_so_far = self.db.get_npc_data(self.session_id, npc_name)['location'] or "(Unknown)"
+
+        # Minimal plan text for an NPC—no dedicated plan for them, so we use a placeholder
+        plan_text = "No formal plan is tracked for NPC."
+
+        return LOCATION_UPDATE_CONTEXT_TEMPLATE.format(
+            character_name=npc_name,
+            location_so_far=location_so_far,
+            plan_text=plan_text,
+            relevant_lines=json.dumps(relevant_lines, ensure_ascii=False, indent=2)
+        )
+
+    #
+    # NEW: Evaluate NPC appearance change similarly to how it's done for characters
+    #
+    async def evaluate_npc_appearance_update(self, npc_name: str, visited: Optional[Set[str]] = None):
+        if visited is None:
+            visited = set()
+        if npc_name in visited:
+            return
+        visited.add(npc_name)
+
+        try:
+            appearance_llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=AppearanceUpdate
+            )
+            if self.llm_client:
+                appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
+            system_prompt = APPEARANCE_UPDATE_SYSTEM_PROMPT.format(
+                character_name=npc_name,
+                moral_guidelines=""  # Not used or can be loaded if needed
+            )
+            dynamic_context = self.build_npc_appearance_update_context(npc_name)
+            update_response = await asyncio.to_thread(
+                appearance_llm.generate,
+                prompt=dynamic_context,
+                system=system_prompt,
+                use_cache=False
+            )
+
+            if not update_response or not isinstance(update_response, AppearanceUpdate):
+                logger.info(f"No appearance update or invalid data for NPC '{npc_name}'.")
+                return
+
+            new_segments = update_response.new_appearance
+            transition_action = remove_markdown((update_response.transition_action or "").strip())
+
+            # Retrieve old segments for NPC
+            old_npc = self.db.get_npc_data(self.session_id, npc_name)
+            if not old_npc:
+                logger.info(f"No existing NPC data for '{npc_name}' to compare.")
+                return
+
+            # For NPC, we store appearance in a single string; no partial merges
+            old_app = old_npc['appearance']
+            # We'll do a naive "only update if any field is non-empty" approach
+            combined_app_fields = []
+
+            def append_if_filled(label, new_text):
+                t = new_text.strip()
+                if t:
+                    combined_app_fields.append(f"{label}: {t}")
+
+            append_if_filled("Hair", new_segments.hair)
+            append_if_filled("Clothing", new_segments.clothing)
+            append_if_filled("Accessories/Held Items", new_segments.accessories_and_held_items)
+            append_if_filled("Posture/Body Language", new_segments.posture_and_body_language)
+            append_if_filled("Facial Expression", new_segments.facial_expression)
+            append_if_filled("Other", new_segments.other_relevant_details)
+
+            new_app_str = ""
+            if combined_app_fields:
+                new_app_str = " | ".join(combined_app_fields)
+            else:
+                # If the LLM didn't specify any changes, we treat that as no update
+                new_app_str = old_app.strip()
+
+            # Post the minimal transition action if non-empty
+            if transition_action:
+                self.db.save_message(
+                    session_id=self.session_id,
+                    sender=f"NPC: {npc_name}",
+                    message=f"*{transition_action}*",
+                    visible=1,
+                    message_type="character"
+                )
+
+            if new_app_str and new_app_str != old_app.strip():
+                # Update the NPC in DB with new appearance
+                self.db.add_npc_to_session(
+                    self.session_id,
+                    npc_name,
+                    old_npc['purpose'],
+                    new_app_str,
+                    old_npc['location']
+                )
+                logger.info(
+                    f"Appearance updated for NPC '{npc_name}'. Rationale: {update_response.rationale} | "
+                    f"New appearance: {new_app_str}"
+                )
+            else:
+                logger.info(f"No actual appearance change for NPC '{npc_name}'. Rationale: {update_response.rationale}")
+
+            for other_npc in update_response.other_characters:
+                if not other_npc:
+                    continue
+                if other_npc not in self.db.get_all_npcs_in_session(self.session_id):
+                    logger.info(f"Ignoring 'other_characters' entry for NPC appearance: {other_npc} not in current session.")
+                    continue
+                if other_npc not in visited:
+                    await self.evaluate_npc_appearance_update(other_npc, visited=visited)
+
+        except Exception as e:
+            logger.error(f"Error in evaluate_npc_appearance_update for NPC '{npc_name}': {e}", exc_info=True)
+
+    def build_npc_appearance_update_context(self, npc_name: str) -> str:
+        visible_history = self.db.get_visible_messages_for_npc(self.session_id, npc_name)
+        relevant_lines = [f"{m['sender']}: {m['message']}" for m in visible_history[-7:]]
+        old_npc = self.db.get_npc_data(self.session_id, npc_name)
+        old_appearance = old_npc['appearance'] if old_npc else "(Unknown)"
+
+        # No plan for NPC, so just a placeholder
+        plan_text = "NPC has no formal plan."
+
+        return APPEARANCE_UPDATE_CONTEXT_TEMPLATE.format(
+            character_name=npc_name,
+            current_location=old_npc['location'] if old_npc else "(Unknown)",
+            old_appearance=old_appearance,
+            plan_text=plan_text,
+            relevant_lines=json.dumps(relevant_lines, ensure_ascii=False, indent=2)
+        )
 
     async def maybe_summarize_npc_memory(self):
         """
@@ -312,7 +597,7 @@ class NPCManager:
 
     async def summarize_npc_history_if_needed(self, npc_name: str):
         """
-        Summarize the NPC's visible lines if threshold is exceeded. 
+        Summarize the NPC's visible lines if threshold is exceeded.
         Hide them once summarized.
         """
         npc_msgs = self.db.get_visible_messages_for_npc(self.session_id, npc_name)
@@ -393,9 +678,8 @@ You are {npc_name}. Combine these summaries into one cohesive summary:
 
     async def get_relevant_recent_lines(self, up_to_message_id: Optional[int], limit: int) -> List[str]:
         """
-        Helper to gather the last 'limit' lines up to 'up_to_message_id' 
-        from the main messages (user or character). 
-        If up_to_message_id is None, use the entire message list's last 'limit' lines.
+        Gather the last 'limit' lines up to 'up_to_message_id' from user or character messages.
+        If up_to_message_id is None, get the last 'limit' lines from the entire session so far.
         """
         all_msgs = self.db.get_messages(self.session_id)
         if up_to_message_id:
