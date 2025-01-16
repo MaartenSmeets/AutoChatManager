@@ -45,7 +45,7 @@ class OllamaClient:
         we revert to using the config file's model_name.
         """
         if model_name and model_name.strip():
-            logger.info(f"User-selected model set to: {model_name}")
+            logger.debug(f"User-selected model set to: {model_name}")
             self.user_selected_model = model_name
         else:
             logger.info("User-selected model is cleared; will revert to config.")
