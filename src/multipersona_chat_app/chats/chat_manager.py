@@ -733,7 +733,7 @@ class ChatManager:
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Evaluating location update for {character_name} because location_change_expected is True or forced update triggered."
+                    f"Evaluating location update for {character_name} because location change is expected or forced update triggered."
                 )
 
             location_llm = OllamaClient(
@@ -836,7 +836,7 @@ class ChatManager:
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Evaluating appearance update for {character_name} because appearance_change_expected is True or forced update triggered."
+                    f"Evaluating appearance update for {character_name} because appearance change is expected or forced update triggered."
                 )
 
             appearance_llm = OllamaClient(

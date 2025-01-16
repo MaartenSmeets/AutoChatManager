@@ -390,7 +390,7 @@ You are an assistant helping to determine a character's **updated location** fro
 You must return a JSON object with this structure exactly:
 
 {{
-  "location": "<A detailed and complete description of {character_name}'s current location. This includes position relative to key objects such as a bed or table.>"
+  "location": "<A detailed and complete description of {character_name}'s current location in a single line of plain text (no JSON). This includes position relative to key objects such as a bed or table.>"
 }}
 
 No additional keys, no extra text. Note: Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets.
