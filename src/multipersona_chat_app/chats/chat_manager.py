@@ -35,7 +35,7 @@ import utils
 import json
 
 import asyncio
-import re  # <-- Added for alphanumeric check
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,8 @@ class ChatManager:
         self.summary_of_summaries_count = self.config.get("summary_of_summaries_count", 5)
         self.max_similarity_retries = self.config.get("max_similarity_retries", 2)
 
-        # NEW forced location/appearance update interval
+        # forced location/appearance update interval
         self.forced_update_interval = self.config.get("forced_update_interval", 5)
-        # Tracks how many messages each character has sent since last forced update
         self.msg_counter_since_forced_update: Dict[str, int] = {}
 
         db_path = os.path.join("output", "conversations.db")
@@ -116,11 +115,10 @@ class ChatManager:
                     self.current_setting = None
                     logger.error("No matching stored setting and no default setting found. No setting applied.")
 
-        # Store the llm_client reference so we can use or propagate user-selected model
         self.llm_client = llm_client
 
-        self.npc_manager_active = False  # You can toggle this from the UI
-        self.last_npc_check_msg_id = 0   # track up to which message we've checked
+        self.npc_manager_active = False
+        self.last_npc_check_msg_id = 0
 
         npc_config_path = os.path.join("src", "multipersona_chat_app", "config", "npc_manager_config.yaml")
         self.npc_manager = NPCManager(
@@ -130,7 +128,6 @@ class ChatManager:
             config_path=npc_config_path
         )
 
-        # NEW/UPDATED: for real-time LLM status updates
         self.llm_status_callback = None
 
     @staticmethod
@@ -144,7 +141,6 @@ class ChatManager:
             logger.error(f"Error loading config from {config_path}: {e}")
             return {}
 
-    # NEW/UPDATED: method to accept a callback for pushing LLM status messages
     def set_llm_status_callback(self, callback):
         self.llm_status_callback = callback
         if self.npc_manager:
@@ -202,7 +198,6 @@ class ChatManager:
             logger.warning(f"No system/dynamic prompts found in YAML for '{char_name}'.")
 
         self.ensure_character_plan_exists(char_name)
-        # Initialize forced-update counter
         self.msg_counter_since_forced_update[char_name] = 0
 
     def remove_character(self, char_name: str):
@@ -302,17 +297,14 @@ class ChatManager:
             emotion,
             thoughts
         )
-        # Mark visible for all session characters + npcs
         self.db.add_message_visibility_for_session_characters(self.session_id, message_id)
 
-        # After each new message, we can check if we need to do NPC logic
         if self.npc_manager_active:
             self.last_npc_check_msg_id = await self.npc_manager.check_npc_interactions(
                 current_setting_description=(self.current_setting_description or ""),
                 last_checked_msg_id=self.last_npc_check_msg_id
             )
 
-        # Summaries for full-blown characters
         await self.check_summarization()
         return message_id
 
@@ -338,7 +330,6 @@ class ChatManager:
                 await self.summarize_history_for_character(char_name)
 
     async def summarize_history_for_character(self, character_name: str):
-        # Create or use a local OllamaClient but ensure user-selected model is propagated
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -425,7 +416,6 @@ class ChatManager:
             await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
-        # Also ensure user-selected model is used here
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -617,7 +607,6 @@ class ChatManager:
             if m["sender"] == character_name and m["message_type"] == "character"
         )
 
-        # If first time for this character to speak, do introduction steps
         if not char_spoken_before:
             await self.generate_character_introduction_message(character_name)
             return
@@ -629,7 +618,6 @@ class ChatManager:
                 )
 
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
-            # Create a new OllamaClient for this generation, ensure user-selected model is used
             llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -654,6 +642,12 @@ class ChatManager:
                     await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
                 return
 
+            # NEW: remove markdown from emotion/thoughts as well
+            interaction.action = utils.remove_markdown(interaction.action)
+            interaction.dialogue = utils.remove_markdown(interaction.dialogue)
+            interaction.emotion = utils.remove_markdown(interaction.emotion)
+            interaction.thoughts = utils.remove_markdown(interaction.thoughts)
+
             final_interaction = await self.check_and_regenerate_if_repetitive(
                 character_name, system_prompt, formatted_prompt, interaction
             )
@@ -661,9 +655,11 @@ class ChatManager:
                 logger.warning(f"Repetitive or invalid output could not be resolved for {character_name}.")
                 final_interaction = interaction
 
-            # Remove all Markdown from raw LLM output before storing
+            # Remove markdown from final fields again, just in case
             final_interaction.action = utils.remove_markdown(final_interaction.action)
             final_interaction.dialogue = utils.remove_markdown(final_interaction.dialogue)
+            final_interaction.emotion = utils.remove_markdown(final_interaction.emotion)
+            final_interaction.thoughts = utils.remove_markdown(final_interaction.thoughts)
 
             if final_interaction.action.strip() and final_interaction.dialogue.strip():
                 formatted_message = f"*{final_interaction.action}*\n{final_interaction.dialogue}"
@@ -686,14 +682,13 @@ class ChatManager:
             location_was_triggered = False
             appearance_was_triggered = False
 
-            # Handle location change
             if final_interaction.location_change_expected:
                 logger.debug(f"{character_name} indicated location change. Evaluating location update next.")
                 await self.evaluate_location_update(character_name)
                 location_was_triggered = True
             else:
                 logger.info(f"No location change indicated for {character_name}.")
-            # Handle appearance change
+
             if final_interaction.appearance_change_expected:
                 logger.debug(f"{character_name} indicated appearance change. Evaluating appearance update next.")
                 await self.evaluate_appearance_update(character_name)
@@ -701,7 +696,6 @@ class ChatManager:
             else:
                 logger.info(f"No appearance change indicated for {character_name}.")
 
-            # Now do forced updates if none were triggered and the threshold is reached
             if not location_was_triggered and not appearance_was_triggered:
                 self.msg_counter_since_forced_update[character_name] = \
                     self.msg_counter_since_forced_update.get(character_name, 0) + 1
@@ -715,7 +709,6 @@ class ChatManager:
                     await self.evaluate_appearance_update(character_name)
                     self.msg_counter_since_forced_update[character_name] = 0
             else:
-                # If either was triggered, reset the counter
                 self.msg_counter_since_forced_update[character_name] = 0
 
             if self.llm_status_callback:
@@ -770,12 +763,10 @@ class ChatManager:
             transition_action = utils.remove_markdown((update_response.transition_action or "").strip())
             current_location = self.db.get_character_location(self.session_id, character_name) or ""
 
-            # If the new location is the same as old, treat as no change
             if new_loc == current_location:
                 new_loc = ""
                 transition_action = ""
 
-            # Post transition action if non-empty
             if transition_action:
                 await self.add_message(
                     character_name,
@@ -817,7 +808,6 @@ class ChatManager:
 
     def build_location_update_context(self, character_name: str) -> str:
         visible_history = self.db.get_visible_messages_for_character(self.session_id, character_name)
-        # Exclude thoughts/emotions
         relevant_lines = []
         for m in visible_history[-5:]:
             if m["sender"] in self.characters:
@@ -917,7 +907,6 @@ class ChatManager:
                 new_segments.other_relevant_details
             ])
 
-            # Post the minimal transition action if non-empty
             if transition_action:
                 await self.add_message(
                     character_name,
@@ -981,7 +970,6 @@ class ChatManager:
         logger.info(f"Building introduction prompts for character: {character_name}")
         system_prompt, introduction_prompt = self.build_introduction_prompts_for_character(character_name)
 
-        # Create new client for introduction, ensure user-selected model is used
         introduction_llm_client = OllamaClient(
             'src/multipersona_chat_app/config/llm_config.yaml',
             output_model=CharacterIntroductionOutput
@@ -1190,19 +1178,10 @@ class ChatManager:
         dynamic_prompt: str,
         interaction: Interaction
     ) -> Optional[Interaction]:
-        """
-        Checks for:
-         - High repetition compared to recent lines
-         - Action/Dialogue overlap
-         - Presence of angle brackets < or >
-         - **No alphanumeric** in both action and dialogue
-        If any violation is found, tries to regenerate up to max_tries times.
-        """
         all_visible = self.db.get_visible_messages_for_character(self.session_id, character_name)
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
 
-        # We'll create a new embed_client each time, but ensure user-selected model is used for embeddings
         embed_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             embed_client.set_user_selected_model(self.llm_client.user_selected_model)
@@ -1218,28 +1197,24 @@ class ChatManager:
             violation_detected = False
             violation_reasons = []
 
-            # 1) Check for no alphanumeric in BOTH action and dialogue
             if (not re.search(r'[A-Za-z0-9]', action_text)) and (not re.search(r'[A-Za-z0-9]', dialogue_text)):
                 violation_detected = True
                 violation_reasons.append(
                     "No alphanumeric characters found in both action and dialogue."
                 )
 
-            # 2) Angle bracket check
             if "<" in action_text or ">" in action_text or "<" in dialogue_text or ">" in dialogue_text:
                 violation_detected = True
                 violation_reasons.append(
-                    "Angle bracket placeholders detected in output. These are not allowed in the final output."
+                    "Angle bracket placeholders detected in output. These are not allowed."
                 )
 
-            # 3) Dialogue repeated verbatim in action
             if dialogue_text.strip() and dialogue_text.strip() in action_text:
                 violation_detected = True
                 violation_reasons.append(
-                    "Dialogue text is literally repeated in the action field. Avoid duplication or direct quotes."
+                    "Dialogue text is literally repeated in the action field."
                 )
 
-            # 4) Compare action vs. dialogue embeddings
             action_embedding = embed_client.get_embedding(action_text)
             dialogue_embedding = embed_client.get_embedding(dialogue_text)
             actiondialogue_embedding = embed_client.get_embedding(action_text + ' ' + dialogue_text)
@@ -1250,11 +1225,8 @@ class ChatManager:
             if (cos_sim_action_dialogue >= self.similarity_threshold or
                 jac_sim_action_dialogue >= self.similarity_threshold):
                 violation_detected = True
-                violation_reasons.append(
-                    "Action and dialogue are too similar, indicating repetition."
-                )
+                violation_reasons.append("Action and dialogue are too similar.")
 
-            # 5) Compare with recent lines from same speaker
             if not violation_detected:
                 for line_obj in recent_speaker_lines:
                     old_msg = line_obj["message"]
@@ -1273,7 +1245,7 @@ class ChatManager:
                         cos_sim_both >= self.similarity_threshold or jac_sim_both >= self.similarity_threshold):
                         violation_detected = True
                         violation_reasons.append(
-                            "The new action/dialogue is too similar to a recent message, indicating repetition."
+                            "The new action/dialogue is too similar to a recent message."
                         )
                         break
 
@@ -1291,7 +1263,7 @@ class ChatManager:
                 "\n\nIMPORTANT:\n"
                 + appended_warning
                 + "\nPlease regenerate without these violations. "
-                + "Do not use angle brackets in the output, and avoid literal duplication or non-alphanumeric-only output.\n"
+                + "Do not use angle brackets, and avoid duplication or empty text.\n"
             )
 
             logger.info(f"Violation(s) found: {violation_reasons}. Regenerating attempt #{tries}.")
@@ -1321,12 +1293,6 @@ class ChatManager:
         return False
 
     async def update_all_characters_location_and_appearance_from_scratch(self):
-        """
-        For each character in the current session, do two new LLM calls:
-         1) LOCATION_FROM_SCRATCH: ignoring any previous location
-         2) APPEARANCE_FROM_SCRATCH: ignoring any previous appearance
-        Then store those results in DB.
-        """
         session_chars = self.db.get_session_characters(self.session_id)
         for c_name in session_chars:
             if c_name not in self.characters:
@@ -1334,7 +1300,7 @@ class ChatManager:
 
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Updating location and appearance from scratch for {c_name}, ignoring any old data."
+                    f"Updating location and appearance from scratch for {c_name}."
                 )
 
             char_obj = self.characters[c_name]
@@ -1360,7 +1326,6 @@ class ChatManager:
             all_summaries = self.db.get_all_summaries(self.session_id, c_name)
             summaries_text = "\n".join(all_summaries) if all_summaries else ""
 
-            # 1) LOCATION
             location_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
             if self.llm_client:
                 location_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -1401,7 +1366,6 @@ class ChatManager:
                     if updated:
                         logger.info(f"[From Scratch] Updated location for {c_name} to: {final_location}")
 
-            # 2) APPEARANCE
             appearance_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
             if self.llm_client:
                 appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)

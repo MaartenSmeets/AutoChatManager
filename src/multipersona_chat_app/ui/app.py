@@ -10,7 +10,7 @@ from llm.ollama_client import OllamaClient
 from models.interaction import Interaction
 from models.character import Character
 from chats.chat_manager import ChatManager
-from utils import load_settings, get_available_characters
+from utils import load_settings, get_available_characters, remove_markdown
 from templates import (
     CharacterIntroductionOutput,
     INTRODUCTION_TEMPLATE,
@@ -23,7 +23,6 @@ llm_client = None
 introduction_llm_client = None
 chat_manager = None
 
-# Removed user_input
 character_dropdown = None
 added_characters_container = None
 next_speaker_label = None
@@ -39,9 +38,11 @@ character_details_display = None
 
 notification_queue = asyncio.Queue()
 
-# Flag used to avoid showing "cannot change setting" warnings
-# when we programmatically set the setting on session load.
+# Flag to prevent warnings when loading sessions in code
 is_session_being_loaded = False
+
+# NEW: Toggle for showing/hiding private info (thoughts, emotions, plan).
+show_private_info = True
 
 # NEW DROPDOWN for local models
 local_model_dropdown = None
@@ -82,12 +83,8 @@ def init_chat_manager(session_id: str, settings: List[Dict]):
     # Create ChatManager, passing in the main llm_client so it can propagate the user-selected model
     chat_manager = ChatManager(session_id=session_id, settings=settings, llm_client=llm_client)
 
-    # NEW/UPDATED: Register an LLM status callback on chat_manager and npc_manager
-    # so they can push messages via push_llm_status(...) whenever they run tasks.
+    # Register an LLM status callback on chat_manager so it can push messages via push_llm_status(...)
     chat_manager.set_llm_status_callback(push_llm_status)
-    if chat_manager.npc_manager:
-        chat_manager.npc_manager.set_llm_status_callback(push_llm_status)
-# -----------------------------------------------------------------------------
 
 
 def refresh_added_characters():
@@ -107,6 +104,9 @@ def refresh_added_characters():
 
 @ui.refreshable
 def show_character_details():
+    """
+    Displays character details. If 'show_private_info' is False, hides the plan (goal/steps).
+    """
     global character_details_display
     if character_details_display is not None:
         character_details_display.clear()
@@ -158,19 +158,20 @@ def show_character_details():
                             ui.icon('info').classes('text-gray-600 mr-2')
                             ui.label(f"Other Relevant Details: {seg['other_relevant_details'] if seg['other_relevant_details'].strip() else '(None)'}").classes('text-sm text-gray-700')
 
-                        # Plan
-                        plan_data = chat_manager.db.get_character_plan(chat_manager.session_id, c_name)
-                        if plan_data:
-                            with ui.row().classes('mt-2'):
-                                ui.icon('flag').classes('text-gray-600 mr-2')
-                                ui.label(f"Goal: {plan_data['goal'] or '(No goal)'}")
-                            with ui.row().classes('mb-2'):
-                                ui.icon('list').classes('text-gray-600 mr-2')
-                                steps_text = plan_data['steps'] if plan_data['steps'] else []
-                                ui.label(f"Steps: {steps_text}")
-                        else:
-                            with ui.row().classes('mb-2'):
-                                ui.label("No plan found (it may be generated soon).")
+                        # Plan (only if show_private_info is True)
+                        if show_private_info:
+                            plan_data = chat_manager.db.get_character_plan(chat_manager.session_id, c_name)
+                            if plan_data:
+                                with ui.row().classes('mt-2'):
+                                    ui.icon('flag').classes('text-gray-600 mr-2')
+                                    ui.label(f"Goal: {plan_data['goal'] or '(No goal)'}")
+                                with ui.row().classes('mb-2'):
+                                    ui.icon('list').classes('text-gray-600 mr-2')
+                                    steps_text = plan_data['steps'] if plan_data['steps'] else []
+                                    ui.label(f"Steps: {steps_text}")
+                            else:
+                                with ui.row().classes('mb-2'):
+                                    ui.label("No plan found (it may be generated soon).")
     else:
         logger.error("character_details_display is not initialized.")
 
@@ -200,7 +201,6 @@ def populate_session_dropdown():
 
 def on_session_select(event):
     global is_session_being_loaded
-    # If we are programmatically loading the session, skip.
     if is_session_being_loaded:
         return
 
@@ -262,7 +262,7 @@ def delete_session(_):
 
 def load_session(session_id: str):
     global is_session_being_loaded
-    is_session_being_loaded = True  # Prevent warning triggers on setting change.
+    is_session_being_loaded = True
 
     chat_manager.session_id = session_id
     chat_manager.characters = {}
@@ -280,7 +280,6 @@ def load_session(session_id: str):
             stored_description if stored_description.strip() else setting['description'],
             setting['start_location']
         )
-        # Programmatically set dropdown but skip on_change logic
         settings_dropdown.value = setting['name']
     else:
         if ALL_SETTINGS:
@@ -296,7 +295,6 @@ def load_session(session_id: str):
 
     settings_dropdown.update()
 
-    # Show the actual setting description from DB if present, else from YAML
     if stored_description.strip() and stored_start_location.strip():
         setting_description_label.text = stored_description
         current_location_label.text = stored_start_location
@@ -307,7 +305,7 @@ def load_session(session_id: str):
         else:
             setting_description_label.text = "(No description found)"
             current_location_label.text = "(Not set)"
-    
+
     msgs = chat_manager.db.get_messages(chat_manager.session_id)
     if len(msgs) > 0:
         current_location_label.text = ""
@@ -332,20 +330,16 @@ def load_session(session_id: str):
     settings_dropdown.disabled = has_msgs
     settings_dropdown.update()
 
-    is_session_being_loaded = False  # Done loading session.
+    is_session_being_loaded = False
 
 
 def select_setting(event):
-    # If we are loading a session programmatically, skip changes
     if is_session_being_loaded:
         return
-
-    # If session has messages already, do not allow changes
     if len(chat_manager.db.get_messages(chat_manager.session_id)) > 0:
         notification_queue.put_nowait((
             "Cannot change setting after session has started. Use a new session instead.", 'warning'
         ))
-        # Revert to the actual current setting
         settings_dropdown.value = chat_manager.current_setting
         settings_dropdown.update()
         return
@@ -384,14 +378,34 @@ def toggle_automatic_chat(e):
     next_button.update()
 
 
+def toggle_npc_manager(value: bool):
+    if value:
+        chat_manager.enable_npc_manager()
+    else:
+        chat_manager.disable_npc_manager()
+
+
+# NEW: Toggle handler for showing/hiding private info
+def toggle_show_private_info(value: bool):
+    global show_private_info
+    show_private_info = value
+    show_character_details.refresh()
+    show_chat_display.refresh()
+
+
 @ui.refreshable
 def show_chat_display():
+    """
+    Displays the chat messages. If 'show_private_info' is True, also shows
+    emotion and thoughts. Markdown is removed before displaying private info.
+    """
     chat_display.clear()
     msgs = chat_manager.db.get_messages(chat_manager.session_id)
     msgs_found = len(msgs) > 0
     if msgs_found:
         current_location_label.text = ""
         current_location_label.update()
+
     with chat_display:
         for entry in msgs:
             name = entry["sender"]
@@ -400,6 +414,20 @@ def show_chat_display():
             dt = datetime.fromisoformat(timestamp)
             human_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
             formatted_message = f"**{name}** [{human_timestamp}]:\n\n{message}"
+
+            if show_private_info:
+                # Remove markdown from emotion/thoughts
+                emotion = remove_markdown(entry["emotion"]) if entry["emotion"] else ""
+                thoughts = remove_markdown(entry["thoughts"]) if entry["thoughts"] else ""
+                if emotion or thoughts:
+                    # Display nicely below the main message
+                    private_text = ""
+                    if emotion.strip():
+                        private_text += f"\n*Emotion:* {emotion}"
+                    if thoughts.strip():
+                        private_text += f"\n*Thoughts:* {thoughts}"
+                    formatted_message += f"{private_text}"
+
             ui.markdown(formatted_message)
 
 
@@ -454,38 +482,37 @@ async def remove_character_async(name: str):
     update_next_speaker_label()
 
 
-#
-# NEW BUTTON & FUNCTION TO UPDATE LOCATION/APPEARANCE FROM SCRATCH FOR ALL CHARACTERS
-#
 async def update_all_characters_info():
+    """
+    Updates all characters' location and appearance from scratch.
+    """
     await chat_manager.update_all_characters_location_and_appearance_from_scratch()
     show_chat_display.refresh()
     show_character_details.refresh()
 
 
-#
-# NEW: Retrieve and populate local models in a dropdown, user picks one
-#
+async def consume_llm_status():
+    while not llm_status_queue.empty():
+        msg = await llm_status_queue.get()
+        if llm_status_label:
+            llm_status_label.text = msg
+            llm_status_label.visible = True
+            llm_status_label.update()
+
+
 async def refresh_local_models():
     if not llm_client:
         return
     models = llm_client.list_local_models()
     local_model_dropdown.options = models
     local_model_dropdown.update()
-    # If we have at least one model, select the first by default
     if models:
         local_model_dropdown.value = models[0]
         local_model_dropdown.update()
-        # This ensures the on_change callback triggers with the default
         on_local_model_select({"value": models[0]})
 
 
 def on_local_model_select(event):
-    """
-    When user picks a local model, set it on the global LLM client.
-    If user picks an empty value, revert to config model.
-    """
-    # Extract chosen value depending on the type of 'event'
     if isinstance(event, dict):
         chosen = event.get('value')
     else:
@@ -500,35 +527,13 @@ def on_local_model_select(event):
     introduction_llm_client.set_user_selected_model(chosen)
 
 
-def toggle_npc_manager(value: bool):
-    if value:
-        chat_manager.enable_npc_manager()
-    else:
-        chat_manager.disable_npc_manager()
-
-
-# -----------------------------------------------------------------------------
-# NEW/UPDATED: consume_llm_status timer to read from llm_status_queue
-# -----------------------------------------------------------------------------
-async def consume_llm_status():
-    # Display the most recent status in llm_status_label if any
-    while not llm_status_queue.empty():
-        msg = await llm_status_queue.get()
-        if llm_status_label:
-            llm_status_label.text = msg
-            llm_status_label.visible = True
-            llm_status_label.update()
-# -----------------------------------------------------------------------------
-
-
 def main_page():
     global character_dropdown, added_characters_container
     global next_speaker_label, next_button, settings_dropdown, setting_description_label
     global session_dropdown, chat_display, current_location_label, llm_status_label
     global character_details_display
-
-    global ALL_CHARACTERS, ALL_SETTINGS
     global local_model_dropdown
+    global ALL_CHARACTERS, ALL_SETTINGS
 
     ALL_CHARACTERS = get_available_characters("src/multipersona_chat_app/characters")
     ALL_SETTINGS = load_settings()
@@ -537,7 +542,7 @@ def main_page():
         with ui.card().style('height: 100vh; overflow-y: auto;'):
             ui.label('Multipersona Chat Application').classes('text-2xl font-bold mb-4')
 
-            # NEW: Local model dropdown, a prominent location
+            # Local model dropdown
             with ui.row().classes('w-full items-center mb-4'):
                 ui.label("Local Model:").classes('w-1/4')
                 local_model_dropdown = ui.select(
@@ -574,7 +579,6 @@ def main_page():
             with ui.row().classes('w-full items-center mb-2'):
                 current_location_label = ui.label("").classes('flex-grow text-gray-700')
 
-            # Character details
             character_details_display = ui.column().classes('mb-4')
             show_character_details()
 
@@ -596,6 +600,9 @@ def main_page():
                 auto_switch = ui.switch('Automatic Chat', value=False, on_change=toggle_automatic_chat).classes('mr-2')
                 npc_switch = ui.switch('NPC Manager Active', value=True, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
 
+            # NEW: switch to show/hide private info
+            private_info_switch = ui.switch('Show Private Info', value=True, on_change=lambda e: toggle_show_private_info(e.value)).classes('mr-2')
+
             global next_speaker_label
             next_speaker_label = ui.label("Next speaker:")
             update_next_speaker_label()
@@ -611,7 +618,6 @@ def main_page():
                 on_click=lambda: asyncio.create_task(update_all_characters_info())
             ).classes('mt-4 bg-green-500 text-white')
 
-            # NEW/UPDATED: Real-time LLM status label
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600')
             llm_status_label.visible = False
@@ -628,10 +634,8 @@ def main_page():
     global auto_timer
     auto_timer = ui.timer(interval=2.0, callback=lambda: asyncio.create_task(automatic_conversation()), active=False)
 
-    # Timer to show standard notifications
     ui.timer(1.0, consume_notifications, active=True)
-
-    # NEW/UPDATED: Timer to consume LLM status messages
+    # Timer to consume LLM status messages
     ui.timer(0.5, consume_llm_status, active=True)
 
     # Kick off local model refresh once
