@@ -28,7 +28,9 @@ from models.interaction import (
     Interaction,
     AppearanceSegments,
     LocationUpdate,
-    AppearanceUpdate
+    AppearanceUpdate,
+    LocationFromScratch,
+    AppearanceFromScratch
 )
 from pydantic import BaseModel
 import utils
@@ -1326,7 +1328,13 @@ class ChatManager:
             all_summaries = self.db.get_all_summaries(self.session_id, c_name)
             summaries_text = "\n".join(all_summaries) if all_summaries else ""
 
-            location_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+            #
+            # Location from scratch (structured)
+            #
+            location_llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=LocationFromScratch
+            )
             if self.llm_client:
                 location_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
@@ -1342,31 +1350,33 @@ class ChatManager:
             )
             location_user = LOCATION_FROM_SCRATCH_USER_PROMPT.format(character_name=c_name)
 
-            new_location_raw = await asyncio.to_thread(
+            new_location_result = await asyncio.to_thread(
                 location_llm.generate,
                 prompt=location_user,
                 system=location_system,
                 use_cache=False
             )
-            if new_location_raw is None or not isinstance(new_location_raw, str):
-                logger.warning(f"Failed to get location from scratch for {c_name}. Skipping.")
+            final_location = ""
+            if new_location_result and isinstance(new_location_result, LocationFromScratch):
+                final_location = new_location_result.location.strip()
             else:
-                try:
-                    loc_data = json.loads(new_location_raw)
-                    final_location = loc_data.get("location", "").strip()
-                except:
-                    logger.warning(f"Could not parse new location JSON for {c_name}: {new_location_raw}")
-                    final_location = ""
+                logger.warning(f"Failed to get structured location for {c_name}. Skipping location update.")
 
-                if final_location:
-                    messages = self.db.get_messages(self.session_id)
-                    last_msg = messages[-1] if messages else None
-                    triggered_id = last_msg['id'] if last_msg else None
-                    updated = self.db.update_character_location(self.session_id, c_name, final_location, triggered_id)
-                    if updated:
-                        logger.info(f"[From Scratch] Updated location for {c_name} to: {final_location}")
+            if final_location:
+                messages = self.db.get_messages(self.session_id)
+                last_msg = messages[-1] if messages else None
+                triggered_id = last_msg['id'] if last_msg else None
+                updated = self.db.update_character_location(self.session_id, c_name, final_location, triggered_id)
+                if updated:
+                    logger.info(f"[From Scratch] Updated location for {c_name} to: {final_location}")
 
-            appearance_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+            #
+            # Appearance from scratch (structured)
+            #
+            appearance_llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=AppearanceFromScratch
+            )
             if self.llm_client:
                 appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
@@ -1380,28 +1390,21 @@ class ChatManager:
             )
             appearance_user = APPEARANCE_FROM_SCRATCH_USER_PROMPT.format(character_name=c_name)
 
-            new_appearance_raw = await asyncio.to_thread(
+            new_appearance_result = await asyncio.to_thread(
                 appearance_llm.generate,
                 prompt=appearance_user,
                 system=appearance_system,
                 use_cache=False
             )
-            if new_appearance_raw is None or not isinstance(new_appearance_raw, str):
-                logger.warning(f"Failed to get appearance from scratch for {c_name}. Skipping.")
-            else:
-                try:
-                    app_json = json.loads(new_appearance_raw)
-                    new_segments = AppearanceSegments(
-                        hair=app_json.get("hair", "").strip(),
-                        clothing=app_json.get("clothing", "").strip(),
-                        accessories_and_held_items=app_json.get("accessories_and_held_items", "").strip(),
-                        posture_and_body_language=app_json.get("posture_and_body_language", "").strip(),
-                        facial_expression=app_json.get("facial_expression", "").strip(),
-                        other_relevant_details=app_json.get("other_relevant_details", "").strip()
-                    )
-                except:
-                    logger.warning(f"Could not parse new appearance JSON for {c_name}: {new_appearance_raw}")
-                    continue
+            if new_appearance_result and isinstance(new_appearance_result, AppearanceFromScratch):
+                new_segments = AppearanceSegments(
+                    hair=new_appearance_result.hair.strip(),
+                    clothing=new_appearance_result.clothing.strip(),
+                    accessories_and_held_items=new_appearance_result.accessories_and_held_items.strip(),
+                    posture_and_body_language=new_appearance_result.posture_and_body_language.strip(),
+                    facial_expression=new_appearance_result.facial_expression.strip(),
+                    other_relevant_details=new_appearance_result.other_relevant_details.strip()
+                )
 
                 messages = self.db.get_messages(self.session_id)
                 last_msg = messages[-1] if messages else None
@@ -1409,6 +1412,8 @@ class ChatManager:
                 updated = self.db.update_character_appearance(self.session_id, c_name, new_segments, triggered_id)
                 if updated:
                     logger.info("[From Scratch] Updated appearance for %s with new subfields: %s", c_name, new_segments.model_dump())
+            else:
+                logger.warning(f"Failed to get structured appearance for {c_name}. Skipping appearance update.")
 
             if self.llm_status_callback:
                 await self.llm_status_callback(
