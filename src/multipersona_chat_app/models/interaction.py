@@ -43,3 +43,16 @@ class AppearanceUpdate(BaseModel):
     transition_action: str = ""
     rationale: str
     other_characters: List[str] = []
+
+
+class LocationFromScratch(BaseModel):
+    location: str
+
+
+class AppearanceFromScratch(BaseModel):
+    hair: str = ""
+    clothing: str = ""
+    accessories_and_held_items: str = ""
+    posture_and_body_language: str = ""
+    facial_expression: str = ""
+    other_relevant_details: str = ""

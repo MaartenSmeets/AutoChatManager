@@ -5,6 +5,7 @@ from models.character import Character
 from db.db_manager import DBManager
 from llm.ollama_client import OllamaClient
 from datetime import datetime
+from npc_manager import NPCManager
 import yaml
 from templates import (
     INTRODUCTION_TEMPLATE,
@@ -27,14 +28,16 @@ from models.interaction import (
     Interaction,
     AppearanceSegments,
     LocationUpdate,
-    AppearanceUpdate
+    AppearanceUpdate,
+    LocationFromScratch,
+    AppearanceFromScratch
 )
 from pydantic import BaseModel
 import utils
 import json
 
 import asyncio
-import re  # <-- Added for alphanumeric check
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +67,8 @@ class ChatManager:
         self.summary_of_summaries_count = self.config.get("summary_of_summaries_count", 5)
         self.max_similarity_retries = self.config.get("max_similarity_retries", 2)
 
-        # NEW forced location/appearance update interval
+        # forced location/appearance update interval
         self.forced_update_interval = self.config.get("forced_update_interval", 5)
-        # Tracks how many messages each character has sent since last forced update
         self.msg_counter_since_forced_update: Dict[str, int] = {}
 
         db_path = os.path.join("output", "conversations.db")
@@ -115,8 +117,20 @@ class ChatManager:
                     self.current_setting = None
                     logger.error("No matching stored setting and no default setting found. No setting applied.")
 
-        # Store the llm_client reference so we can use or propagate user-selected model
         self.llm_client = llm_client
+
+        self.npc_manager_active = False
+        self.last_npc_check_msg_id = 0
+
+        npc_config_path = os.path.join("src", "multipersona_chat_app", "config", "npc_manager_config.yaml")
+        self.npc_manager = NPCManager(
+            session_id=self.session_id,
+            db=self.db,
+            llm_client=llm_client,
+            config_path=npc_config_path
+        )
+
+        self.llm_status_callback = None
 
     @staticmethod
     def load_config(config_path: str) -> dict:
@@ -128,6 +142,11 @@ class ChatManager:
         except Exception as e:
             logger.error(f"Error loading config from {config_path}: {e}")
             return {}
+
+    def set_llm_status_callback(self, callback):
+        self.llm_status_callback = callback
+        if self.npc_manager:
+            self.npc_manager.set_llm_status_callback(callback)
 
     @property
     def current_location(self) -> Optional[str]:
@@ -181,7 +200,6 @@ class ChatManager:
             logger.warning(f"No system/dynamic prompts found in YAML for '{char_name}'.")
 
         self.ensure_character_plan_exists(char_name)
-        # Initialize forced-update counter
         self.msg_counter_since_forced_update[char_name] = 0
 
     def remove_character(self, char_name: str):
@@ -282,8 +300,23 @@ class ChatManager:
             thoughts
         )
         self.db.add_message_visibility_for_session_characters(self.session_id, message_id)
+
+        if self.npc_manager_active:
+            self.last_npc_check_msg_id = await self.npc_manager.check_npc_interactions(
+                current_setting_description=(self.current_setting_description or ""),
+                last_checked_msg_id=self.last_npc_check_msg_id
+            )
+
         await self.check_summarization()
         return message_id
+
+    def enable_npc_manager(self):
+        self.npc_manager_active = True
+        logger.info("NPC Manager has been enabled.")
+
+    def disable_npc_manager(self):
+        self.npc_manager_active = False
+        logger.info("NPC Manager has been disabled.")
 
     async def check_summarization(self):
         all_msgs = self.db.get_messages(self.session_id)
@@ -303,6 +336,12 @@ class ChatManager:
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
+        if self.llm_status_callback:
+            await self.llm_status_callback(
+                f"Summarizing history for {character_name} because their visible messages exceeded the threshold."
+            )
+
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -363,11 +402,11 @@ class ChatManager:
                 moral_guidelines=self.moral_guidelines
             )
 
-            new_summary = await asyncio.to_thread(summarize_llm.generate, prompt=prompt)
-            if not new_summary:
-                new_summary = "No significant new events."
+            summary = await asyncio.to_thread(summarize_llm.generate, prompt=prompt, use_cache=False)
+            if not summary:
+                summary = "No significant new events."
 
-            self.db.save_new_summary(self.session_id, character_name, new_summary, max_message_id_in_chunk)
+            self.db.save_new_summary(self.session_id, character_name, summary, max_message_id_in_chunk)
             self.db.hide_messages_for_character(self.session_id, character_name, chunk_ids)
 
             logger.info(
@@ -376,6 +415,9 @@ class ChatManager:
             )
 
         await self.combine_summaries_if_needed(character_name)
+
+        if self.llm_status_callback:
+            await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
         # Also ensure user-selected model is used here
@@ -400,7 +442,12 @@ class ChatManager:
                 moral_guidelines=self.moral_guidelines
             )
 
-            combined_summary = await asyncio.to_thread(summarize_llm.generate, prompt=prompt)
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Combining older summaries for {character_name} into a single consolidated summary."
+                )
+
+            combined_summary = await asyncio.to_thread(summarize_llm.generate, prompt=prompt, use_cache=False)
             if not combined_summary:
                 combined_summary = "No significant combined summary."
 
@@ -411,6 +458,9 @@ class ChatManager:
                 f"Combined {len(chunk_summaries)} summaries into one for '{character_name}'. "
                 f"Deleted old summary records: {chunk_ids}."
             )
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(f"Done combining summaries for {character_name}.")
 
     def get_latest_dialogue(self, character_name: str) -> str:
         visible_history = self.get_visible_history_for_character(character_name)
@@ -562,14 +612,18 @@ class ChatManager:
             if m["sender"] == character_name and m["message_type"] == "character"
         )
 
-        # If first time for this character to speak, do introduction steps
         if not char_spoken_before:
             await self.generate_character_introduction_message(character_name)
             return
 
         try:
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Generating next interaction for {character_name} to continue the conversation."
+                )
+
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
-            # Create a new OllamaClient for this generation, ensure user-selected model is used
+
             llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -583,10 +637,22 @@ class ChatManager:
 
             if not interaction:
                 logger.warning(f"No response for {character_name}. Not storing.")
+                if self.llm_status_callback:
+                    await self.llm_status_callback(
+                        f"No interaction generated for {character_name}; the LLM returned empty."
+                    )
                 return
             if not isinstance(interaction, Interaction):
                 logger.error(f"Invalid interaction type from LLM: {type(interaction)}. Value: {interaction}")
+                if self.llm_status_callback:
+                    await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
                 return
+
+            # NEW: remove markdown from emotion/thoughts as well
+            interaction.action = utils.remove_markdown(interaction.action)
+            interaction.dialogue = utils.remove_markdown(interaction.dialogue)
+            interaction.emotion = utils.remove_markdown(interaction.emotion)
+            interaction.thoughts = utils.remove_markdown(interaction.thoughts)
 
             final_interaction = await self.check_and_regenerate_if_repetitive(
                 character_name, system_prompt, formatted_prompt, interaction
@@ -595,9 +661,11 @@ class ChatManager:
                 logger.warning(f"Repetitive or invalid output could not be resolved for {character_name}.")
                 final_interaction = interaction
 
-            # Remove all Markdown from raw LLM output before storing
+            # Remove markdown from final fields again, just in case
             final_interaction.action = utils.remove_markdown(final_interaction.action)
             final_interaction.dialogue = utils.remove_markdown(final_interaction.dialogue)
+            final_interaction.emotion = utils.remove_markdown(final_interaction.emotion)
+            final_interaction.thoughts = utils.remove_markdown(final_interaction.thoughts)
 
             if final_interaction.action.strip() and final_interaction.dialogue.strip():
                 formatted_message = f"*{final_interaction.action}*\n{final_interaction.dialogue}"
@@ -620,20 +688,20 @@ class ChatManager:
             location_was_triggered = False
             appearance_was_triggered = False
 
-            # Handle location change
             if final_interaction.location_change_expected:
+                logger.debug(f"{character_name} indicated location change. Evaluating location update next.")
                 await self.evaluate_location_update(character_name)
                 location_was_triggered = True
             else:
                 logger.info(f"No location change indicated for {character_name}.")
-            # Handle appearance change
+
             if final_interaction.appearance_change_expected:
+                logger.debug(f"{character_name} indicated appearance change. Evaluating appearance update next.")
                 await self.evaluate_appearance_update(character_name)
                 appearance_was_triggered = True
             else:
                 logger.info(f"No appearance change indicated for {character_name}.")
 
-            # Now do forced updates if none were triggered and the threshold is reached
             if not location_was_triggered and not appearance_was_triggered:
                 self.msg_counter_since_forced_update[character_name] = \
                     self.msg_counter_since_forced_update.get(character_name, 0) + 1
@@ -647,11 +715,19 @@ class ChatManager:
                     await self.evaluate_appearance_update(character_name)
                     self.msg_counter_since_forced_update[character_name] = 0
             else:
-                # If either was triggered, reset the counter
                 self.msg_counter_since_forced_update[character_name] = 0
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Finished generating interaction for {character_name}."
+                )
 
         except Exception as e:
             logger.error(f"Error generating message for {character_name}: {e}", exc_info=True)
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"An error occurred while generating an interaction for {character_name}."
+                )
 
     async def evaluate_location_update(self, character_name: str, visited: Optional[Set[str]] = None):
         if visited is None:
@@ -661,6 +737,11 @@ class ChatManager:
         visited.add(character_name)
 
         try:
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Evaluating location update for {character_name} because location change is expected or forced update triggered."
+                )
+
             location_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=LocationUpdate
@@ -688,12 +769,10 @@ class ChatManager:
             transition_action = utils.remove_markdown((update_response.transition_action or "").strip())
             current_location = self.db.get_character_location(self.session_id, character_name) or ""
 
-            # If the new location is the same as old, treat as no change
             if new_loc == current_location:
                 new_loc = ""
                 transition_action = ""
 
-            # Post transition action if non-empty
             if transition_action:
                 await self.add_message(
                     character_name,
@@ -721,12 +800,20 @@ class ChatManager:
                 if other_char not in visited:
                     await self.evaluate_location_update(other_char, visited=visited)
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Done checking location update for {character_name}."
+                )
+
         except Exception as e:
             logger.error(f"Error in evaluate_location_update for {character_name}: {e}", exc_info=True)
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"An error occurred while evaluating location update for {character_name}."
+                )
 
     def build_location_update_context(self, character_name: str) -> str:
-        visible_history = self.get_visible_history_for_character(character_name)
-        # Exclude thoughts/emotions
+        visible_history = self.db.get_visible_messages_for_character(self.session_id, character_name)
         relevant_lines = []
         for m in visible_history[-5:]:
             if m["sender"] in self.characters:
@@ -753,6 +840,11 @@ class ChatManager:
         visited.add(character_name)
 
         try:
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Evaluating appearance update for {character_name} because appearance change is expected or forced update triggered."
+                )
+
             appearance_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=AppearanceUpdate
@@ -821,7 +913,6 @@ class ChatManager:
                 new_segments.other_relevant_details
             ])
 
-            # Post the minimal transition action if non-empty
             if transition_action:
                 await self.add_message(
                     character_name,
@@ -852,11 +943,20 @@ class ChatManager:
                 if other_char not in visited:
                     await self.evaluate_appearance_update(other_char, visited=visited)
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Done checking appearance update for {character_name}."
+                )
+
         except Exception as e:
             logger.error(f"Error in evaluate_appearance_update for {character_name}: {e}", exc_info=True)
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"An error occurred while evaluating appearance update for {character_name}."
+                )
 
     def build_appearance_update_context(self, character_name: str) -> str:
-        visible_history = self.get_visible_history_for_character(character_name)
+        visible_history = self.db.get_visible_messages_for_character(self.session_id, character_name)
         current_location = self.db.get_character_location(self.session_id, character_name) or "(Unknown)"
         relevant_lines = [f"{m['sender']}: {m['message']}" for m in visible_history[-7:]]
         old_appearance = self.db.get_character_appearance(self.session_id, character_name)
@@ -876,7 +976,6 @@ class ChatManager:
         logger.info(f"Building introduction prompts for character: {character_name}")
         system_prompt, introduction_prompt = self.build_introduction_prompts_for_character(character_name)
 
-        # Create new client for introduction, ensure user-selected model is used
         introduction_llm_client = OllamaClient(
             'src/multipersona_chat_app/config/llm_config.yaml',
             output_model=CharacterIntroductionOutput
@@ -885,6 +984,11 @@ class ChatManager:
             introduction_llm_client.set_user_selected_model(self.llm_client.user_selected_model)
 
         try:
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Generating an initial introduction for {character_name}, since it's their first time speaking."
+                )
+
             introduction_response = await asyncio.to_thread(
                 introduction_llm_client.generate,
                 prompt=introduction_prompt,
@@ -918,10 +1022,23 @@ class ChatManager:
                     triggered_message_id
                 )
                 logger.info(f"Saved introduction message for {character_name}")
+                if self.llm_status_callback:
+                    await self.llm_status_callback(
+                        f"Introduction completed for {character_name}."
+                    )
             else:
                 logger.warning(f"Invalid response received for introduction of {character_name}. Response: {introduction_response}")
+                if self.llm_status_callback:
+                    await self.llm_status_callback(
+                        f"An invalid introduction was returned for {character_name}."
+                    )
+
         except Exception as e:
             logger.error(f"Error generating introduction for {character_name}: {e}", exc_info=True)
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"An error occurred while generating the introduction for {character_name}."
+                )
 
     def get_session_name(self) -> str:
         sessions = self.db.get_all_sessions()
@@ -970,54 +1087,81 @@ class ChatManager:
             latest_dialogue=self.get_latest_dialogue(character_name)
         )
 
-        plan_result = await asyncio.to_thread(
-            plan_client.generate,
-            prompt=user_prompt,
-            system=system_prompt,
-            use_cache=False
-        )
-
-        if not plan_result:
-            logger.warning("Plan update returned no result. Keeping existing plan.")
-            return
-
         try:
-            if isinstance(plan_result, CharacterPlan):
-                new_plan: CharacterPlan = plan_result
-            else:
-                new_plan = CharacterPlan.model_validate_json(plan_result)
-
-            new_goal = new_plan.goal
-            new_steps = new_plan.steps
-            new_why = new_plan.why_new_plan_goal.strip()
-
-            if (new_goal != old_goal) or (new_steps != old_steps) or (new_why != old_why):
-                change_explanation = self.build_plan_change_summary(old_goal, old_steps, new_goal, new_steps)
-                if new_why:
-                    change_explanation += f" Additional reason: {new_why}"
-                self.db.save_character_plan_with_history(
-                    self.session_id,
-                    character_name,
-                    new_goal,
-                    new_steps,
-                    new_why,
-                    triggered_message_id,
-                    change_explanation
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Generating (or updating) the plan for {character_name} due to new input or context."
                 )
-            else:
-                self.db.save_character_plan_with_history(
-                    self.session_id,
-                    character_name,
-                    new_goal,
-                    new_steps,
-                    new_why,
-                    triggered_message_id,
-                    "No change in plan"
-                )
-        except Exception as e:
-            logger.error(
-                f"Failed to parse new plan for '{character_name}'. Keeping old plan. Error: {e}"
+
+            plan_result = await asyncio.to_thread(
+                plan_client.generate,
+                prompt=user_prompt,
+                system=system_prompt,
+                use_cache=False
             )
+
+            if not plan_result:
+                logger.warning("Plan update returned no result. Keeping existing plan.")
+                if self.llm_status_callback:
+                    await self.llm_status_callback(
+                        f"No plan update was generated for {character_name}; retaining old plan."
+                    )
+                return
+
+            try:
+                if isinstance(plan_result, CharacterPlan):
+                    new_plan: CharacterPlan = plan_result
+                else:
+                    new_plan = CharacterPlan.model_validate_json(plan_result)
+
+                new_goal = new_plan.goal
+                new_steps = new_plan.steps
+                new_why = new_plan.why_new_plan_goal.strip()
+
+                if (new_goal != old_goal) or (new_steps != old_steps) or (new_why != old_why):
+                    change_explanation = self.build_plan_change_summary(old_goal, old_steps, new_goal, new_steps)
+                    if new_why:
+                        change_explanation += f" Additional reason: {new_why}"
+                    self.db.save_character_plan_with_history(
+                        self.session_id,
+                        character_name,
+                        new_goal,
+                        new_steps,
+                        new_why,
+                        triggered_message_id,
+                        change_explanation
+                    )
+                else:
+                    self.db.save_character_plan_with_history(
+                        self.session_id,
+                        character_name,
+                        new_goal,
+                        new_steps,
+                        new_why,
+                        triggered_message_id,
+                        "No change in plan"
+                    )
+
+                if self.llm_status_callback:
+                    await self.llm_status_callback(
+                        f"Plan has been updated for {character_name} (Goal: {new_goal})."
+                    )
+
+            except Exception as e2:
+                logger.error(
+                    f"Failed to parse new plan for '{character_name}'. Keeping old plan. Error: {e2}"
+                )
+                if self.llm_status_callback:
+                    await self.llm_status_callback(
+                        f"An error occurred while parsing the new plan for {character_name}, so the old plan remains."
+                    )
+
+        except Exception as e:
+            logger.error(f"Error generating plan for {character_name}: {e}", exc_info=True)
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"An error occurred while generating or updating the plan for {character_name}."
+                )
 
     def build_plan_change_summary(self, old_goal: str, old_steps: List[str], new_goal: str, new_steps: List[str]) -> str:
         changes = []
@@ -1040,14 +1184,6 @@ class ChatManager:
         dynamic_prompt: str,
         interaction: Interaction
     ) -> Optional[Interaction]:
-        """
-        Checks for:
-         - High repetition compared to recent lines
-         - Action/Dialogue overlap
-         - Presence of angle brackets < or >
-         - **No alphanumeric** in both action and dialogue
-        If any violation is found, tries to regenerate up to max_tries times.
-        """
         all_visible = self.db.get_visible_messages_for_character(self.session_id, character_name)
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
@@ -1068,28 +1204,24 @@ class ChatManager:
             violation_detected = False
             violation_reasons = []
 
-            # 1) Check for no alphanumeric in BOTH action and dialogue
             if (not re.search(r'[A-Za-z0-9]', action_text)) and (not re.search(r'[A-Za-z0-9]', dialogue_text)):
                 violation_detected = True
                 violation_reasons.append(
                     "No alphanumeric characters found in both action and dialogue."
                 )
 
-            # 2) Angle bracket check
             if "<" in action_text or ">" in action_text or "<" in dialogue_text or ">" in dialogue_text:
                 violation_detected = True
                 violation_reasons.append(
-                    "Angle bracket placeholders detected in output. These are not allowed in the final output."
+                    "Angle bracket placeholders detected in output. These are not allowed."
                 )
 
-            # 3) Dialogue repeated verbatim in action
             if dialogue_text.strip() and dialogue_text.strip() in action_text:
                 violation_detected = True
                 violation_reasons.append(
-                    "Dialogue text is literally repeated in the action field. Avoid duplication or direct quotes."
+                    "Dialogue text is literally repeated in the action field."
                 )
 
-            # 4) Compare action vs. dialogue embeddings
             action_embedding = embed_client.get_embedding(action_text)
             dialogue_embedding = embed_client.get_embedding(dialogue_text)
             actiondialogue_embedding = embed_client.get_embedding(action_text + ' ' + dialogue_text)
@@ -1100,11 +1232,8 @@ class ChatManager:
             if (cos_sim_action_dialogue >= self.similarity_threshold or
                 jac_sim_action_dialogue >= self.similarity_threshold):
                 violation_detected = True
-                violation_reasons.append(
-                    "Action and dialogue are too similar, indicating repetition."
-                )
+                violation_reasons.append("Action and dialogue are too similar.")
 
-            # 5) Compare with recent lines from same speaker
             if not violation_detected:
                 for line_obj in recent_speaker_lines:
                     old_msg = line_obj["message"]
@@ -1123,7 +1252,7 @@ class ChatManager:
                         cos_sim_both >= self.similarity_threshold or jac_sim_both >= self.similarity_threshold):
                         violation_detected = True
                         violation_reasons.append(
-                            "The new action/dialogue is too similar to a recent message, indicating repetition."
+                            "The new action/dialogue is too similar to a recent message."
                         )
                         break
 
@@ -1141,7 +1270,7 @@ class ChatManager:
                 "\n\nIMPORTANT:\n"
                 + appended_warning
                 + "\nPlease regenerate without these violations. "
-                + "Do not use angle brackets in the output, and avoid literal duplication or non-alphanumeric-only output.\n"
+                + "Do not use angle brackets, and avoid duplication or empty text.\n"
             )
 
             logger.info(f"Violation(s) found: {violation_reasons}. Regenerating attempt #{tries}.")
@@ -1171,16 +1300,15 @@ class ChatManager:
         return False
 
     async def update_all_characters_location_and_appearance_from_scratch(self):
-        """
-        For each character in the current session, do two new LLM calls:
-         1) LOCATION_FROM_SCRATCH: ignoring any previous location
-         2) APPEARANCE_FROM_SCRATCH: ignoring any previous appearance
-        Then store those results in DB.
-        """
         session_chars = self.db.get_session_characters(self.session_id)
         for c_name in session_chars:
             if c_name not in self.characters:
                 continue
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Updating location and appearance from scratch for {c_name}."
+                )
 
             char_obj = self.characters[c_name]
             setting_name = self.current_setting or ""
@@ -1205,8 +1333,14 @@ class ChatManager:
             all_summaries = self.db.get_all_summaries(self.session_id, c_name)
             summaries_text = "\n".join(all_summaries) if all_summaries else ""
 
-            # 1) LOCATION
-            location_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+            #
+            # Location from scratch (structured)
+            #
+            location_llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=LocationFromScratch
+            )
+
             if self.llm_client:
                 location_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
@@ -1222,22 +1356,17 @@ class ChatManager:
             )
             location_user = LOCATION_FROM_SCRATCH_USER_PROMPT.format(character_name=c_name)
 
-            new_location_raw = await asyncio.to_thread(
+            new_location_result = await asyncio.to_thread(
                 location_llm.generate,
                 prompt=location_user,
                 system=location_system,
                 use_cache=False
             )
-            if new_location_raw is None or not isinstance(new_location_raw, str):
-                logger.warning(f"Failed to get location from scratch for {c_name}. Skipping.")
-                continue
-
-            try:
-                loc_data = json.loads(new_location_raw)
-                final_location = loc_data.get("location", "").strip()
-            except:
-                logger.warning(f"Could not parse new location JSON for {c_name}: {new_location_raw}")
-                final_location = ""
+            final_location = ""
+            if new_location_result and isinstance(new_location_result, LocationFromScratch):
+                final_location = new_location_result.location.strip()
+            else:
+                logger.warning(f"Failed to get structured location for {c_name}. Skipping location update.")
 
             if final_location:
                 messages = self.db.get_messages(self.session_id)
@@ -1247,8 +1376,11 @@ class ChatManager:
                 if updated:
                     logger.info(f"[From Scratch] Updated location for {c_name} to: {final_location}")
 
-            # 2) APPEARANCE
-            appearance_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+            appearance_llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=AppearanceFromScratch
+            )
+
             if self.llm_client:
                 appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
@@ -1262,33 +1394,32 @@ class ChatManager:
             )
             appearance_user = APPEARANCE_FROM_SCRATCH_USER_PROMPT.format(character_name=c_name)
 
-            new_appearance_raw = await asyncio.to_thread(
+            new_appearance_result = await asyncio.to_thread(
                 appearance_llm.generate,
                 prompt=appearance_user,
                 system=appearance_system,
                 use_cache=False
             )
-            if new_appearance_raw is None or not isinstance(new_appearance_raw, str):
-                logger.warning(f"Failed to get appearance from scratch for {c_name}. Skipping.")
-                continue
-
-            try:
-                app_json = json.loads(new_appearance_raw)
+            if new_appearance_result and isinstance(new_appearance_result, AppearanceFromScratch):
                 new_segments = AppearanceSegments(
-                    hair=app_json.get("hair", "").strip(),
-                    clothing=app_json.get("clothing", "").strip(),
-                    accessories_and_held_items=app_json.get("accessories_and_held_items", "").strip(),
-                    posture_and_body_language=app_json.get("posture_and_body_language", "").strip(),
-                    facial_expression=app_json.get("facial_expression", "").strip(),
-                    other_relevant_details=app_json.get("other_relevant_details", "").strip()
+                    hair=new_appearance_result.hair.strip(),
+                    clothing=new_appearance_result.clothing.strip(),
+                    accessories_and_held_items=new_appearance_result.accessories_and_held_items.strip(),
+                    posture_and_body_language=new_appearance_result.posture_and_body_language.strip(),
+                    facial_expression=new_appearance_result.facial_expression.strip(),
+                    other_relevant_details=new_appearance_result.other_relevant_details.strip()
                 )
-            except:
-                logger.warning(f"Could not parse new appearance JSON for {c_name}: {new_appearance_raw}")
-                continue
 
-            messages = self.db.get_messages(self.session_id)
-            last_msg = messages[-1] if messages else None
-            triggered_id = last_msg['id'] if last_msg else None
-            updated = self.db.update_character_appearance(self.session_id, c_name, new_segments, triggered_id)
-            if updated:
-                logger.info("[From Scratch] Updated appearance for %s with new subfields: %s", c_name, new_segments.model_dump())
+                messages = self.db.get_messages(self.session_id)
+                last_msg = messages[-1] if messages else None
+                triggered_id = last_msg['id'] if last_msg else None
+                updated = self.db.update_character_appearance(self.session_id, c_name, new_segments, triggered_id)
+                if updated:
+                    logger.info("[From Scratch] Updated appearance for %s with new subfields: %s", c_name, new_segments.model_dump())
+            else:
+                logger.warning(f"Failed to get structured appearance for {c_name}. Skipping appearance update.")
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Done updating location and appearance from scratch for {c_name}."
+                )
