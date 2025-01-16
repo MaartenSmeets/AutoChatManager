@@ -1,8 +1,19 @@
-- name: "Velvet Embrace"
-  description: "A romantic and exclusive escape for couples in a luxurious love hotel, tailored for intimacy and relaxation."
-  start_location: "A lavish bedroom with a grand canopy bed dressed in satin sheets. The en-suite jacuzzi takes center stage, filled with warm, aromatic water, surrounded by flickering candles, ready for use. Thoughtful touches include sound-isolating walls for complete privacy. Ready for use on the bed lies a rotating personal massager designed for intimate stimulation. Next to the bed is a sybian machine, a riding vibrator. Other toys and accessories are available in the room."
+- name: "Crimson Demon's Hideout"
+  description: "A quirky and magical village setting brimming with eccentric characters and bizarre architecture, perfectly reflecting the unique charm of the Crimson Demons."
+  start_location: "A bustling square in the heart of the Crimson Demons' village, surrounded by colorful and absurdly designed buildings adorned with runes, glowing symbols, and oversized decorations. The air is alive with energy as villagers showcase flashy magic tricks, argue passionately about spell techniques, and engage in odd but endearing customs. A massive fountain in the shape of a magical staff stands at the center, spraying sparkling water into the air. The surrounding area is dotted with magical shops, potion stalls, and a lively tavern where laughter and explosions are equally common."
+  
+- name: "Adventurer's Guild"
+  description: "The central hub for adventurers to gather, take on quests, and share stories of their escapades in a lively and welcoming environment."
+  start_location: "A lively tavern-like hall filled with long wooden tables and bustling with adventurers of all kinds. The walls are adorned with quest notices, maps, and trophies from past adventures. A bar at one side serves hearty food and drink, while a quest counter at the other end is staffed by cheerful guild workers. The atmosphere is filled with chatter, laughter, and the clinking of mugs, as well as occasional loud boasts of grand achievements."
 
-- name: "Serenity Springs"
-  description: "A secluded haven nestled in Japan's forested mountains, offering a tranquil blend of natural beauty, cultural elegance, and the unique experience of mixed baths and pools for intimate encounters."
-  start_location: "Soaking alone in the warm, silky waters of a private mixed onsen without clothes (as per Japanese custom), surrounded by towering cedar trees and lush foliage. The steamy water caresses your bare skin, sending shivers down your spine, while flickering lanterns cast seductive shadows on smooth stones. Above, the twinkling starlit sky adds to the ethereal ambiance."
+- name: "Dusty Trail Outskirts"
+  description: "A rustic and perilous wilderness setting just outside the town, where adventurers prepare for their journeys and face lurking dangers."
+  start_location: "A narrow dirt path winding through rolling fields and sparse forests, with the town visible in the distance. The area is dotted with small campsites, merchant stalls, and occasional makeshift training grounds where novice adventurers practice their skills. The sounds of rustling leaves and distant monster cries create a tense but exhilarating atmosphere. The trail is lined with weathered signposts pointing toward various dungeons and quests."
 
+- name: "Explosion Practice Grounds"
+  description: "An open and desolate area designated for practicing powerful and destructive spells, particularly Explosion magic."
+  start_location: "A wide and barren plain on the outskirts of the Crimson Demons' village, marked by scorched earth, craters, and the lingering scent of sulfur. The occasional sparkle of residual magical energy dances in the air. The area is surrounded by a natural barrier of rocky outcroppings and sparse trees, providing a sense of isolation and safety from the immense power of the spells cast here. A simple wooden bench and a few stone markers serve as the only signs of human presence."
+
+- name: "Kazuma's Party Camp"
+  description: "A makeshift campsite that serves as a base of operations for Kazuma and his party during their travels."
+  start_location: "A small and chaotic campsite in a clearing surrounded by dense forest. A shabby tent stands crookedly beside a haphazardly constructed fire pit, where a pot of stew bubbles unevenly. The area is littered with various adventuring gear, including Aqua's scattered belongings, Megumin's staff, and Darkness's bulky armor. The surrounding forest hums with the sounds of nature, while the camp itself buzzes with the antics and banter of its eccentric occupants."
