@@ -332,6 +332,7 @@ class ChatManager:
                 await self.summarize_history_for_character(char_name)
 
     async def summarize_history_for_character(self, character_name: str):
+        # Create or use a local OllamaClient but ensure user-selected model is propagated
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -340,6 +341,7 @@ class ChatManager:
             await self.llm_status_callback(
                 f"Summarizing history for {character_name} because their visible messages exceeded the threshold."
             )
+
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -418,6 +420,7 @@ class ChatManager:
             await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
+        # Also ensure user-selected model is used here
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -620,6 +623,7 @@ class ChatManager:
                 )
 
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
+
             llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -1184,6 +1188,7 @@ class ChatManager:
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
 
+        # We'll create a new embed_client each time, but ensure user-selected model is used for embeddings
         embed_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             embed_client.set_user_selected_model(self.llm_client.user_selected_model)
@@ -1335,6 +1340,7 @@ class ChatManager:
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=LocationFromScratch
             )
+
             if self.llm_client:
                 location_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
@@ -1370,13 +1376,11 @@ class ChatManager:
                 if updated:
                     logger.info(f"[From Scratch] Updated location for {c_name} to: {final_location}")
 
-            #
-            # Appearance from scratch (structured)
-            #
             appearance_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=AppearanceFromScratch
             )
+
             if self.llm_client:
                 appearance_llm.set_user_selected_model(self.llm_client.user_selected_model)
 

@@ -87,6 +87,7 @@ def init_chat_manager(session_id: str, settings: List[Dict]):
     chat_manager.set_llm_status_callback(push_llm_status)
 
 
+
 def refresh_added_characters():
     if added_characters_container is not None:
         added_characters_container.clear()
@@ -637,10 +638,8 @@ def main_page():
     ui.timer(1.0, consume_notifications, active=True)
     # Timer to consume LLM status messages
     ui.timer(0.5, consume_llm_status, active=True)
-
     # Kick off local model refresh once
     ui.timer(0.5, refresh_local_models, active=True, once=True)
-
 
 def start_ui():
     default_session = str(uuid.uuid4())
