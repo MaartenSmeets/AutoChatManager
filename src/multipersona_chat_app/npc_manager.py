@@ -116,7 +116,9 @@ class NPCManager:
             checker_client.set_user_selected_model(self.llm_client.user_selected_model)
 
         if self.llm_status_callback:
-            await self.llm_status_callback("Comparing two locations via LLM...")
+            await self.llm_status_callback(
+                "Comparing two location descriptions via LLM to see if they match or overlap."
+            )
 
         response_text = await asyncio.to_thread(
             checker_client.generate,
@@ -128,7 +130,7 @@ class NPCManager:
             return False
 
         if self.llm_status_callback:
-            await self.llm_status_callback("Done comparing locations.")
+            await self.llm_status_callback("Done comparing those locations.")
 
         return response_text.same_location
 
@@ -208,7 +210,9 @@ class NPCManager:
             creation_client.set_user_selected_model(self.llm_client.user_selected_model)
 
         if self.llm_status_callback:
-            await self.llm_status_callback("Checking if a new NPC should be created...")
+            await self.llm_status_callback(
+                "Checking if a new NPC is needed based on the latest lines of dialogue or context."
+            )
 
         creation_result = await asyncio.to_thread(
             creation_client.generate,
@@ -235,7 +239,9 @@ class NPCManager:
             logger.info(f"New NPC created: {npc_name} | Purpose='{creation_result.npc_purpose}'")
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"New NPC '{npc_name}' created.")
+                await self.llm_status_callback(
+                    f"New NPC '{npc_name}' was created because the LLM indicated it's needed."
+                )
 
             # Immediately generate an LLM-based introduction (action + dialogue)
             intro_system_prompt = NPC_INTRO_SYSTEM_PROMPT.format(
@@ -257,7 +263,9 @@ class NPCManager:
                 intro_client.set_user_selected_model(self.llm_client.user_selected_model)
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Generating introduction for NPC '{npc_name}'...")
+                await self.llm_status_callback(
+                    f"Generating an introduction for the newly created NPC '{npc_name}'."
+                )
 
             intro_output = await asyncio.to_thread(
                 intro_client.generate,
@@ -288,7 +296,7 @@ class NPCManager:
                 logger.info(f"NPC introduction for '{npc_name}': {final_msg}")
 
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Introduction done for NPC '{npc_name}'.")
+                    await self.llm_status_callback(f"Introduction completed for NPC '{npc_name}'.")
             else:
                 logger.debug("NPC introduction step returned no result or invalid format.")
 
@@ -350,6 +358,11 @@ class NPCManager:
         )
         if self.llm_client.user_selected_model:
             reply_client.set_user_selected_model(self.llm_client.user_selected_model)
+
+        if self.llm_status_callback:
+            await self.llm_status_callback(
+                f"Generating a reply for NPC '{npc_name}' because they share location with at least one character."
+            )
 
         result = await asyncio.to_thread(
             reply_client.generate,
@@ -414,6 +427,12 @@ class NPCManager:
                 moral_guidelines=""  # Not used or can be loaded if needed
             )
             dynamic_context = self.build_npc_location_update_context(npc_name)
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Evaluating location update for NPC '{npc_name}' because location_change_expected is True."
+                )
+
             update_response = await asyncio.to_thread(
                 location_llm.generate,
                 prompt=dynamic_context,
@@ -511,6 +530,12 @@ class NPCManager:
                 moral_guidelines=""  # Not used or can be loaded if needed
             )
             dynamic_context = self.build_npc_appearance_update_context(npc_name)
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"Evaluating appearance update for NPC '{npc_name}' because appearance_change_expected is True."
+                )
+
             update_response = await asyncio.to_thread(
                 appearance_llm.generate,
                 prompt=dynamic_context,
@@ -531,7 +556,6 @@ class NPCManager:
                 logger.info(f"No existing NPC data for '{npc_name}' to compare.")
                 return
 
-            # For NPC, we store appearance in a single string; no partial merges
             old_app = old_npc['appearance']
             # We'll do a naive "only update if any field is non-empty" approach
             combined_app_fields = []

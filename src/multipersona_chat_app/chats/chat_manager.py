@@ -344,7 +344,9 @@ class ChatManager:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
 
         if self.llm_status_callback:
-            await self.llm_status_callback(f"Summarizing history for {character_name}...")
+            await self.llm_status_callback(
+                f"Summarizing history for {character_name} because their visible messages exceeded the threshold."
+            )
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -420,7 +422,7 @@ class ChatManager:
         await self.combine_summaries_if_needed(character_name)
 
         if self.llm_status_callback:
-            await self.llm_status_callback(f"Done summarizing history for {character_name}.")
+            await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
         # Also ensure user-selected model is used here
@@ -446,7 +448,9 @@ class ChatManager:
             )
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Combining summaries for {character_name}...")
+                await self.llm_status_callback(
+                    f"Combining older summaries for {character_name} into a single consolidated summary."
+                )
 
             combined_summary = await asyncio.to_thread(summarize_llm.generate, prompt=prompt, use_cache=False)
             if not combined_summary:
@@ -620,7 +624,9 @@ class ChatManager:
 
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Generating LLM response for {character_name}...")
+                await self.llm_status_callback(
+                    f"Generating next interaction for {character_name} to continue the conversation."
+                )
 
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
             # Create a new OllamaClient for this generation, ensure user-selected model is used
@@ -638,12 +644,14 @@ class ChatManager:
             if not interaction:
                 logger.warning(f"No response for {character_name}. Not storing.")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"No response generated for {character_name}.")
+                    await self.llm_status_callback(
+                        f"No interaction generated for {character_name}; the LLM returned empty."
+                    )
                 return
             if not isinstance(interaction, Interaction):
                 logger.error(f"Invalid interaction type from LLM: {type(interaction)}. Value: {interaction}")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Invalid LLM output for {character_name}.")
+                    await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
                 return
 
             final_interaction = await self.check_and_regenerate_if_repetitive(
@@ -680,12 +688,14 @@ class ChatManager:
 
             # Handle location change
             if final_interaction.location_change_expected:
+                logger.debug(f"{character_name} indicated location change. Evaluating location update next.")
                 await self.evaluate_location_update(character_name)
                 location_was_triggered = True
             else:
                 logger.info(f"No location change indicated for {character_name}.")
             # Handle appearance change
             if final_interaction.appearance_change_expected:
+                logger.debug(f"{character_name} indicated appearance change. Evaluating appearance update next.")
                 await self.evaluate_appearance_update(character_name)
                 appearance_was_triggered = True
             else:
@@ -709,12 +719,16 @@ class ChatManager:
                 self.msg_counter_since_forced_update[character_name] = 0
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Finished generating response for {character_name}.")
+                await self.llm_status_callback(
+                    f"Finished generating interaction for {character_name}."
+                )
 
         except Exception as e:
             logger.error(f"Error generating message for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Error during generation for {character_name}.")
+                await self.llm_status_callback(
+                    f"An error occurred while generating an interaction for {character_name}."
+                )
 
     async def evaluate_location_update(self, character_name: str, visited: Optional[Set[str]] = None):
         if visited is None:
@@ -725,7 +739,9 @@ class ChatManager:
 
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Checking location update for {character_name}...")
+                await self.llm_status_callback(
+                    f"Evaluating location update for {character_name} because location_change_expected is True or forced update triggered."
+                )
 
             location_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
@@ -788,12 +804,16 @@ class ChatManager:
                     await self.evaluate_location_update(other_char, visited=visited)
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Done checking location update for {character_name}.")
+                await self.llm_status_callback(
+                    f"Done checking location update for {character_name}."
+                )
 
         except Exception as e:
             logger.error(f"Error in evaluate_location_update for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Error in location update for {character_name}.")
+                await self.llm_status_callback(
+                    f"An error occurred while evaluating location update for {character_name}."
+                )
 
     def build_location_update_context(self, character_name: str) -> str:
         visible_history = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -825,7 +845,9 @@ class ChatManager:
 
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Checking appearance update for {character_name}...")
+                await self.llm_status_callback(
+                    f"Evaluating appearance update for {character_name} because appearance_change_expected is True or forced update triggered."
+                )
 
             appearance_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
@@ -927,12 +949,16 @@ class ChatManager:
                     await self.evaluate_appearance_update(other_char, visited=visited)
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Done checking appearance update for {character_name}.")
+                await self.llm_status_callback(
+                    f"Done checking appearance update for {character_name}."
+                )
 
         except Exception as e:
             logger.error(f"Error in evaluate_appearance_update for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Error in appearance update for {character_name}.")
+                await self.llm_status_callback(
+                    f"An error occurred while evaluating appearance update for {character_name}."
+                )
 
     def build_appearance_update_context(self, character_name: str) -> str:
         visible_history = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -965,7 +991,9 @@ class ChatManager:
 
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Generating introduction for {character_name}...")
+                await self.llm_status_callback(
+                    f"Generating an initial introduction for {character_name}, since it's their first time speaking."
+                )
 
             introduction_response = await asyncio.to_thread(
                 introduction_llm_client.generate,
@@ -1001,16 +1029,22 @@ class ChatManager:
                 )
                 logger.info(f"Saved introduction message for {character_name}")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Introduction generated for {character_name}.")
+                    await self.llm_status_callback(
+                        f"Introduction completed for {character_name}."
+                    )
             else:
                 logger.warning(f"Invalid response received for introduction of {character_name}. Response: {introduction_response}")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Invalid introduction output for {character_name}.")
+                    await self.llm_status_callback(
+                        f"An invalid introduction was returned for {character_name}."
+                    )
 
         except Exception as e:
             logger.error(f"Error generating introduction for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Error during introduction for {character_name}.")
+                await self.llm_status_callback(
+                    f"An error occurred while generating the introduction for {character_name}."
+                )
 
     def get_session_name(self) -> str:
         sessions = self.db.get_all_sessions()
@@ -1061,7 +1095,9 @@ class ChatManager:
 
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Generating plan for {character_name}...")
+                await self.llm_status_callback(
+                    f"Generating (or updating) the plan for {character_name} due to new input or context."
+                )
 
             plan_result = await asyncio.to_thread(
                 plan_client.generate,
@@ -1073,7 +1109,9 @@ class ChatManager:
             if not plan_result:
                 logger.warning("Plan update returned no result. Keeping existing plan.")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"No plan result for {character_name}; kept old plan.")
+                    await self.llm_status_callback(
+                        f"No plan update was generated for {character_name}; retaining old plan."
+                    )
                 return
 
             try:
@@ -1111,19 +1149,25 @@ class ChatManager:
                     )
 
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Plan updated for {character_name}.")
+                    await self.llm_status_callback(
+                        f"Plan has been updated for {character_name} (Goal: {new_goal})."
+                    )
 
             except Exception as e2:
                 logger.error(
                     f"Failed to parse new plan for '{character_name}'. Keeping old plan. Error: {e2}"
                 )
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Error parsing plan for {character_name}. Old plan kept.")
+                    await self.llm_status_callback(
+                        f"An error occurred while parsing the new plan for {character_name}, so the old plan remains."
+                    )
 
         except Exception as e:
             logger.error(f"Error generating plan for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Error generating plan for {character_name}.")
+                await self.llm_status_callback(
+                    f"An error occurred while generating or updating the plan for {character_name}."
+                )
 
     def build_plan_change_summary(self, old_goal: str, old_steps: List[str], new_goal: str, new_steps: List[str]) -> str:
         changes = []
@@ -1289,7 +1333,9 @@ class ChatManager:
                 continue
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Updating location & appearance from scratch for {c_name}...")
+                await self.llm_status_callback(
+                    f"Updating location and appearance from scratch for {c_name}, ignoring any old data."
+                )
 
             char_obj = self.characters[c_name]
             setting_name = self.current_setting or ""
@@ -1401,4 +1447,6 @@ class ChatManager:
                     logger.info("[From Scratch] Updated appearance for %s with new subfields: %s", c_name, new_segments.model_dump())
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Done updating from scratch for {c_name}.")
+                await self.llm_status_callback(
+                    f"Done updating location and appearance from scratch for {c_name}."
+                )
