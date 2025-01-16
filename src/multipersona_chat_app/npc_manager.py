@@ -72,6 +72,9 @@ class NPCManager:
         self.npc_similarity_threshold = self.config.get('npc_similarity_threshold', 0.8)
         self.max_similarity_retries = self.config.get('max_similarity_retries', 2)
 
+        # NEW/UPDATED: for real-time LLM status updates
+        self.llm_status_callback = None
+
     def load_config(self, path: str) -> dict:
         try:
             with open(path, 'r') as file:
@@ -79,6 +82,10 @@ class NPCManager:
         except Exception as e:
             logger.error(f"Error loading NPC manager config: {e}")
             return {}
+
+    # NEW/UPDATED: method to accept a callback for pushing LLM status messages
+    def set_llm_status_callback(self, callback):
+        self.llm_status_callback = callback
 
     async def is_same_location_llm(self, loc1: str, loc2: str, setting_desc: str) -> bool:
         """
@@ -108,6 +115,9 @@ class NPCManager:
         if self.llm_client.user_selected_model:
             checker_client.set_user_selected_model(self.llm_client.user_selected_model)
 
+        if self.llm_status_callback:
+            await self.llm_status_callback("Comparing two locations via LLM...")
+
         response_text = await asyncio.to_thread(
             checker_client.generate,
             prompt=user_prompt,
@@ -116,6 +126,9 @@ class NPCManager:
         )
         if not response_text or not isinstance(response_text, SameLocationCheck):
             return False
+
+        if self.llm_status_callback:
+            await self.llm_status_callback("Done comparing locations.")
 
         return response_text.same_location
 
@@ -194,6 +207,9 @@ class NPCManager:
         if self.llm_client.user_selected_model:
             creation_client.set_user_selected_model(self.llm_client.user_selected_model)
 
+        if self.llm_status_callback:
+            await self.llm_status_callback("Checking if a new NPC should be created...")
+
         creation_result = await asyncio.to_thread(
             creation_client.generate,
             prompt=user_prompt,
@@ -218,6 +234,9 @@ class NPCManager:
             )
             logger.info(f"New NPC created: {npc_name} | Purpose='{creation_result.npc_purpose}'")
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(f"New NPC '{npc_name}' created.")
+
             # Immediately generate an LLM-based introduction (action + dialogue)
             intro_system_prompt = NPC_INTRO_SYSTEM_PROMPT.format(
                 npc_name=npc_name,
@@ -236,6 +255,9 @@ class NPCManager:
             )
             if self.llm_client.user_selected_model:
                 intro_client.set_user_selected_model(self.llm_client.user_selected_model)
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(f"Generating introduction for NPC '{npc_name}'...")
 
             intro_output = await asyncio.to_thread(
                 intro_client.generate,
@@ -265,7 +287,11 @@ class NPCManager:
                 )
                 logger.info(f"NPC introduction for '{npc_name}': {final_msg}")
 
-            # Return the name of the newly created NPC so we can skip immediate second replies
+                if self.llm_status_callback:
+                    await self.llm_status_callback(f"Introduction done for NPC '{npc_name}'.")
+            else:
+                logger.debug("NPC introduction step returned no result or invalid format.")
+
             return npc_name
 
         else:

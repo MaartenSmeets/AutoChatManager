@@ -46,6 +46,16 @@ is_session_being_loaded = False
 # NEW DROPDOWN for local models
 local_model_dropdown = None
 
+# -----------------------------------------------------------------------------
+# NEW/UPDATED: A dedicated queue and helper to show real-time LLM status
+# -----------------------------------------------------------------------------
+llm_status_queue = asyncio.Queue()
+
+async def push_llm_status(msg: str):
+    """Enqueue a status message for display in the UI."""
+    await llm_status_queue.put(msg)
+# -----------------------------------------------------------------------------
+
 
 def consume_notifications():
     while not notification_queue.empty():
@@ -71,6 +81,13 @@ def init_chat_manager(session_id: str, settings: List[Dict]):
 
     # Create ChatManager, passing in the main llm_client so it can propagate the user-selected model
     chat_manager = ChatManager(session_id=session_id, settings=settings, llm_client=llm_client)
+
+    # NEW/UPDATED: Register an LLM status callback on chat_manager and npc_manager
+    # so they can push messages via push_llm_status(...) whenever they run tasks.
+    chat_manager.set_llm_status_callback(push_llm_status)
+    if chat_manager.npc_manager:
+        chat_manager.npc_manager.set_llm_status_callback(push_llm_status)
+# -----------------------------------------------------------------------------
 
 
 def refresh_added_characters():
@@ -476,7 +493,6 @@ def on_local_model_select(event):
 
     if not chosen:
         llm_client.set_user_selected_model(None)
-        # Also set introduction client if used
         introduction_llm_client.set_user_selected_model(None)
         return
 
@@ -489,6 +505,21 @@ def toggle_npc_manager(value: bool):
         chat_manager.enable_npc_manager()
     else:
         chat_manager.disable_npc_manager()
+
+
+# -----------------------------------------------------------------------------
+# NEW/UPDATED: consume_llm_status timer to read from llm_status_queue
+# -----------------------------------------------------------------------------
+async def consume_llm_status():
+    # Display the most recent status in llm_status_label if any
+    while not llm_status_queue.empty():
+        msg = await llm_status_queue.get()
+        if llm_status_label:
+            llm_status_label.text = msg
+            llm_status_label.visible = True
+            llm_status_label.update()
+# -----------------------------------------------------------------------------
+
 
 def main_page():
     global character_dropdown, added_characters_container
@@ -565,7 +596,6 @@ def main_page():
                 auto_switch = ui.switch('Automatic Chat', value=False, on_change=toggle_automatic_chat).classes('mr-2')
                 npc_switch = ui.switch('NPC Manager Active', value=True, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
 
-
             global next_speaker_label
             next_speaker_label = ui.label("Next speaker:")
             update_next_speaker_label()
@@ -581,8 +611,7 @@ def main_page():
                 on_click=lambda: asyncio.create_task(update_all_characters_info())
             ).classes('mt-4 bg-green-500 text-white')
 
-
-
+            # NEW/UPDATED: Real-time LLM status label
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600')
             llm_status_label.visible = False
@@ -599,7 +628,13 @@ def main_page():
     global auto_timer
     auto_timer = ui.timer(interval=2.0, callback=lambda: asyncio.create_task(automatic_conversation()), active=False)
 
+    # Timer to show standard notifications
     ui.timer(1.0, consume_notifications, active=True)
+
+    # NEW/UPDATED: Timer to consume LLM status messages
+    ui.timer(0.5, consume_llm_status, active=True)
+
+    # Kick off local model refresh once
     ui.timer(0.5, refresh_local_models, active=True, once=True)
 
 

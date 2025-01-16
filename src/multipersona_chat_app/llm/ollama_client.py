@@ -1,5 +1,3 @@
-# File: /home/maarten/multi_persona_chatbot/src/multipersona_chat_app/llm/ollama_client.py
-
 import requests
 import logging
 from typing import Optional, Type, List
@@ -29,7 +27,7 @@ class OllamaClient:
         try:
             with open(config_path, 'r') as file:
                 config = yaml.safe_load(file)
-            logger.info(f"Configuration loaded successfully from {config_path}")
+            logger.debug(f"Configuration loaded successfully from {config_path}")
             return config
         except FileNotFoundError:
             logger.error(f"Configuration file not found at path: {config_path}")
@@ -105,7 +103,7 @@ class OllamaClient:
                 continue
             tried_models.append(chosen_model)
 
-            logger.info(f"Using model '{chosen_model}' for attempt #{attempt_index}.")
+            logger.debug(f"Using model '{chosen_model}' for attempt #{attempt_index}.")
             response_value = self._perform_inference(
                 chosen_model,
                 prompt,
@@ -115,7 +113,6 @@ class OllamaClient:
                 use_cache
             )
             if response_value is not None:
-                # If we succeeded, return immediately
                 if attempt_index == 2:
                     # This means the user-selected model failed, and we had to revert
                     logger.warning(f"Reverted to config model '{fallback_model_name}' after user-selected model failed.")
@@ -141,7 +138,7 @@ class OllamaClient:
         if use_cache:
             cached_response = self.cache_manager.get_cached_response(prompt, model_name)
             if cached_response is not None:
-                logger.info("Returning cached LLM response.")
+                logger.debug("Returning cached LLM response from cache.")
                 if self.output_model:
                     try:
                         return self.output_model.parse_raw(cached_response)
@@ -175,13 +172,14 @@ class OllamaClient:
 
         max_retries = self.config.get('max_retries', 3)
 
+        # Debug-level logs for request URL, headers, and caching info
+        logger.debug(f"Request URL: {self.config.get('api_url')}")
         log_headers = headers.copy()
         if 'Authorization' in log_headers:
             log_headers['Authorization'] = 'Bearer ***'
+        logger.debug(f"Request Headers: {log_headers}")
 
-        logger.info("Sending request to Ollama API")
-        logger.info(f"Request URL: {self.config.get('api_url')}")
-        logger.info(f"Request Headers: {log_headers}")
+        # The user wants request payload and final structured output at INFO level
         logger.info(f"Request Payload: {payload}")
 
         for attempt in range(1, max_retries + 1):
@@ -194,7 +192,7 @@ class OllamaClient:
                     timeout=self.config.get('timeout', 300)
                 ) as response:
                     logger.info(f"Received response with status code: {response.status_code}")
-                    logger.info(f"Response Headers: {response.headers}")
+                    logger.debug(f"Response Headers: {response.headers}")
                     response.raise_for_status()
 
                     output = ""
@@ -220,11 +218,10 @@ class OllamaClient:
                             # If we have an output model, parse it as structured data
                             if self.output_model:
                                 try:
-                                    parsed_output = self.output_model.parse_raw(output)
-                                    # Log the structured output so we can see it in the logs:
-                                    logger.info("Final parsed output (structured) stored in cache.")
+                                    parsed_output = self.output_model.model_validate_json(output)
+                                    # Log the structured output at INFO level
+                                    #logger.info("Final parsed output (structured) stored in cache.")
                                     logger.info(f"Structured Output: {parsed_output.dict()}")
-                                    # Store in cache if use_cache is True
                                     if use_cache:
                                         self.cache_manager.store_response(prompt, model_name, output)
                                     return parsed_output
@@ -274,15 +271,15 @@ class OllamaClient:
         if 'Authorization' in log_headers:
             log_headers['Authorization'] = 'Bearer ***'
 
-        logger.info("Sending request to Ollama Embeddings API")
-        logger.info(f"Request URL: {url}")
-        logger.info(f"Request Headers: {log_headers}")
-        logger.info(f"Request Payload: {data}")
+        logger.debug("Sending request to Ollama Embeddings API")
+        logger.debug(f"Request URL: {url}")
+        logger.debug(f"Request Headers: {log_headers}")
+        logger.debug(f"Request Payload: {data}")
 
         try:
             response = requests.post(url, headers=headers, data=json.dumps(data))
-            logger.info(f"Received response with status code: {response.status_code}")
-            logger.info(f"Response Headers: {response.headers}")
+            logger.debug(f"Received response with status code: {response.status_code}")
+            logger.debug(f"Response Headers: {response.headers}")
             response.raise_for_status()
             emb_data = response.json().get('embedding', [])
             logger.debug(f"Embedding data received: {emb_data}")
