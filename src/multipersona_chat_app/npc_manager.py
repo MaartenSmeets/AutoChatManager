@@ -296,6 +296,8 @@ class NPCManager:
         if not npc_location.strip():
             return
 
+        npc_purpose = npc_data['purpose'] or ""
+
         # Check location overlap with session characters
         session_chars = self.db.get_session_characters(self.session_id)
         matching_chars = []
@@ -362,7 +364,7 @@ class NPCManager:
 
             self.db.save_message(
                 session_id=self.session_id,
-                sender=f"NPC: {npc_name}",
+                sender=f"{npc_name} ({npc_purpose})",
                 message=final_message,
                 visible=1,
                 message_type="character",
@@ -419,7 +421,7 @@ class NPCManager:
             new_loc = (update_response.location or "").strip()
             transition_action = remove_markdown((update_response.transition_action or "").strip())
             current_location = self.db.get_npc_data(self.session_id, npc_name)['location'] or ""
-
+            npc_purpose = self.db.get_npc_data(self.session_id, npc_name)['purpose']
             if new_loc == current_location:
                 new_loc = ""
                 transition_action = ""
@@ -427,7 +429,7 @@ class NPCManager:
             if transition_action:
                 self.db.save_message(
                     session_id=self.session_id,
-                    sender=f"NPC: {npc_name}",
+                    sender=f"{npc_name} ({npc_purpose})",
                     message=f"*{transition_action}*",
                     visible=1,
                     message_type="character"
@@ -538,11 +540,11 @@ class NPCManager:
                 new_app_str = " | ".join(combined_app_fields)
             else:
                 new_app_str = old_app.strip()
-
+            npc_purpose = self.db.get_npc_data(self.session_id, npc_name)['purpose'] or ""
             if transition_action:
                 self.db.save_message(
                     session_id=self.session_id,
-                    sender=f"NPC: {npc_name}",
+                    sender=f"{npc_name} ({npc_purpose})",
                     message=f"*{transition_action}*",
                     visible=1,
                     message_type="character"

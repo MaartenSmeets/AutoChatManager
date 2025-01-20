@@ -605,6 +605,7 @@ class ChatManager:
         """
         Generate a message for a character. If 'character_name' is actually the NPC Manager,
         we'll call 'generate_npc_manager_turn()' instead to avoid KeyErrors.
+        Also calls the NPC Manager after each character's **complete turn** (unless it is an introduction).
         """
         if character_name == "NPC Manager":
             logger.info("Handling NPC Manager turn instead of normal character generation.")
@@ -616,11 +617,13 @@ class ChatManager:
         triggered_message_id = all_msgs[-1]['id'] if all_msgs else None
         await self.update_character_plan(character_name, triggered_message_id)
 
+        # Check if this character has spoken before
         char_spoken_before = any(
             m for m in all_msgs
             if m["sender"] == character_name and m["message_type"] == "character"
         )
 
+        # If this is the first time the character speaks, generate an introduction and STOP (no NPC Manager call).
         if not char_spoken_before:
             await self.generate_character_introduction_message(character_name)
             return
@@ -650,11 +653,18 @@ class ChatManager:
                     await self.llm_status_callback(
                         f"No interaction generated for {character_name}; the LLM returned empty."
                     )
+                # Even if empty, the turn is done; we still call NPC Manager next (skip if introduction).
+                if char_spoken_before:
+                    await self.generate_npc_manager_turn()
                 return
+
             if not isinstance(interaction, Interaction):
                 logger.error(f"Invalid interaction type from LLM: {type(interaction)}. Value: {interaction}")
                 if self.llm_status_callback:
                     await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
+                # Even if invalid, the turn is done; we still call NPC Manager (skip if introduction).
+                if char_spoken_before:
+                    await self.generate_npc_manager_turn()
                 return
 
             interaction.action = utils.remove_markdown(interaction.action)
@@ -729,12 +739,19 @@ class ChatManager:
                     f"Finished generating interaction for {character_name}."
                 )
 
+            # Call NPC Manager after the character's complete turn (skip if it was introduction).
+            if char_spoken_before:
+                await self.generate_npc_manager_turn()
+
         except Exception as e:
             logger.error(f"Error generating message for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
                 await self.llm_status_callback(
                     f"An error occurred while generating an interaction for {character_name}."
                 )
+            # Even on error, consider the turn ended; call NPC Manager if it wasn't introduction
+            if char_spoken_before:
+                await self.generate_npc_manager_turn()
 
     async def generate_npc_manager_turn(self):
         """
