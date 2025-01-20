@@ -1,3 +1,4 @@
+# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/chats/chat_manager.py
 import os
 import logging
 from typing import List, Dict, Tuple, Optional, Set
@@ -67,7 +68,6 @@ class ChatManager:
         self.summary_of_summaries_count = self.config.get("summary_of_summaries_count", 5)
         self.max_similarity_retries = self.config.get("max_similarity_retries", 2)
 
-        # forced location/appearance update interval
         self.forced_update_interval = self.config.get("forced_update_interval", 5)
         self.msg_counter_since_forced_update: Dict[str, int] = {}
 
@@ -102,8 +102,8 @@ class ChatManager:
                 setting = self.settings[stored_setting]
                 self.set_current_setting(
                     setting['name'],
-                    setting['description'],
-                    setting['start_location']
+                    self.db.get_current_setting_description(self.session_id) or setting['description'],
+                    self.db.get_current_location(self.session_id) or setting['start_location']
                 )
             else:
                 if settings:
@@ -119,7 +119,7 @@ class ChatManager:
 
         self.llm_client = llm_client
 
-        self.npc_manager_active = False
+        self.npc_manager_active = True
         self.last_npc_check_msg_id = 0
 
         npc_config_path = os.path.join("src", "multipersona_chat_app", "config", "npc_manager_config.yaml")
@@ -251,21 +251,28 @@ class ChatManager:
     def save_character_plan(self, char_name: str, plan: CharacterPlan):
         self.db.save_character_plan(self.session_id, char_name, plan.goal, plan.steps, plan.why_new_plan_goal)
 
+    def get_participants_in_turn_order(self) -> List[str]:
+        """
+        Returns the list of participants in the round-robin order:
+        all user-added characters + "NPC Manager" as the last one.
+        """
+        return self.get_character_names() + ["NPC Manager"]
+
     def next_speaker(self) -> Optional[str]:
-        chars = self.get_character_names()
-        if not chars:
+        participants = self.get_participants_in_turn_order()
+        if not participants:
             return None
 
         all_msgs = self.db.get_messages(self.session_id)
         if not all_msgs:
-            return chars[0]
+            return participants[0]
 
         last_speaker = all_msgs[-1]['sender']
-        if last_speaker in chars:
-            idx = chars.index(last_speaker)
-            next_idx = (idx + 1) % len(chars)
-            return chars[next_idx]
-        return chars[0]
+        if last_speaker in participants:
+            idx = participants.index(last_speaker)
+            next_idx = (idx + 1) % len(participants)
+            return participants[next_idx]
+        return participants[0]
 
     def advance_turn(self):
         pass
@@ -301,11 +308,7 @@ class ChatManager:
         )
         self.db.add_message_visibility_for_session_characters(self.session_id, message_id)
 
-        if self.npc_manager_active:
-            self.last_npc_check_msg_id = await self.npc_manager.check_npc_interactions(
-                current_setting_description=(self.current_setting_description or ""),
-                last_checked_msg_id=self.last_npc_check_msg_id
-            )
+        # NPC manager is handled on its own turn, so no calls here.
 
         await self.check_summarization()
         return message_id
@@ -332,7 +335,6 @@ class ChatManager:
                 await self.summarize_history_for_character(char_name)
 
     async def summarize_history_for_character(self, character_name: str):
-        # Create or use a local OllamaClient but ensure user-selected model is propagated
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -341,7 +343,6 @@ class ChatManager:
             await self.llm_status_callback(
                 f"Summarizing history for {character_name} because their visible messages exceeded the threshold."
             )
-
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -420,7 +421,6 @@ class ChatManager:
             await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
-        # Also ensure user-selected model is used here
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -602,6 +602,15 @@ class ChatManager:
         self.automatic_running = False
 
     async def generate_character_message(self, character_name: str):
+        """
+        Generate a message for a character. If 'character_name' is actually the NPC Manager,
+        we'll call 'generate_npc_manager_turn()' instead to avoid KeyErrors.
+        """
+        if character_name == "NPC Manager":
+            logger.info("Handling NPC Manager turn instead of normal character generation.")
+            await self.generate_npc_manager_turn()
+            return
+
         logger.info(f"Generating interaction for character: {character_name}")
         all_msgs = self.db.get_messages(self.session_id)
         triggered_message_id = all_msgs[-1]['id'] if all_msgs else None
@@ -648,7 +657,6 @@ class ChatManager:
                     await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
                 return
 
-            # NEW: remove markdown from emotion/thoughts as well
             interaction.action = utils.remove_markdown(interaction.action)
             interaction.dialogue = utils.remove_markdown(interaction.dialogue)
             interaction.emotion = utils.remove_markdown(interaction.emotion)
@@ -661,7 +669,6 @@ class ChatManager:
                 logger.warning(f"Repetitive or invalid output could not be resolved for {character_name}.")
                 final_interaction = interaction
 
-            # Remove markdown from final fields again, just in case
             final_interaction.action = utils.remove_markdown(final_interaction.action)
             final_interaction.dialogue = utils.remove_markdown(final_interaction.dialogue)
             final_interaction.emotion = utils.remove_markdown(final_interaction.emotion)
@@ -728,6 +735,20 @@ class ChatManager:
                 await self.llm_status_callback(
                     f"An error occurred while generating an interaction for {character_name}."
                 )
+
+    async def generate_npc_manager_turn(self):
+        """
+        Called when the NPC Manager has its turn. Checks interactions
+        and possibly creates or responds with NPC messages.
+        """
+        if not self.npc_manager_active:
+            logger.info("NPC Manager is disabled. Skipping its turn.")
+            return
+        new_last_id = await self.npc_manager.check_npc_interactions(
+            current_setting_description=(self.current_setting_description or ""),
+            last_checked_msg_id=self.last_npc_check_msg_id
+        )
+        self.last_npc_check_msg_id = new_last_id
 
     async def evaluate_location_update(self, character_name: str, visited: Optional[Set[str]] = None):
         if visited is None:
@@ -1188,7 +1209,6 @@ class ChatManager:
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
 
-        # We'll create a new embed_client each time, but ensure user-selected model is used for embeddings
         embed_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             embed_client.set_user_selected_model(self.llm_client.user_selected_model)
@@ -1333,9 +1353,6 @@ class ChatManager:
             all_summaries = self.db.get_all_summaries(self.session_id, c_name)
             summaries_text = "\n".join(all_summaries) if all_summaries else ""
 
-            #
-            # Location from scratch (structured)
-            #
             location_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=LocationFromScratch
