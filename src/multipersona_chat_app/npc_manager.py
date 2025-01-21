@@ -128,6 +128,10 @@ class NPCManager:
         current_setting_description: str,
         last_checked_msg_id: int
     ) -> int:
+        """
+        Updated so that we only process the LAST new message in each cycle,
+        preventing multiple NPC manager messages between character turns.
+        """
         all_msgs = self.db.get_messages(self.session_id)
         new_messages = [
             m for m in all_msgs
@@ -137,15 +141,17 @@ class NPCManager:
             return last_checked_msg_id
 
         new_messages.sort(key=lambda x: x['id'])
-
+        # Only handle the last new message in this pass:
+        last_msg = new_messages[-1]
+        relevant_lines = await self.get_relevant_recent_lines(last_msg['id'], self.recent_dialogue_lines)
         just_created_npcs = []
 
-        for msg in new_messages:
-            relevant_lines = await self.get_relevant_recent_lines(msg['id'], self.recent_dialogue_lines)
-            newly_created_npc = await self.handle_npc_creation_if_needed(relevant_lines, current_setting_description)
-            if newly_created_npc:
-                just_created_npcs.append(newly_created_npc)
+        # Try NPC creation once for the last message
+        newly_created_npc = await self.handle_npc_creation_if_needed(relevant_lines, current_setting_description)
+        if newly_created_npc:
+            just_created_npcs.append(newly_created_npc)
 
+        # Then process possible NPC replies once
         all_npcs = self.db.get_all_npcs_in_session(self.session_id)
         for npc_name in all_npcs:
             if npc_name in just_created_npcs:
@@ -205,8 +211,6 @@ class NPCManager:
                 if en is None:
                     continue
                 existing_purpose_lower = en['purpose'].lower()
-                # If the new purpose text is heavily overlapping or same role
-                # Just a simple substring check for demonstration
                 if existing_purpose_lower in new_purpose_lower or new_purpose_lower in existing_purpose_lower:
                     logger.info(
                         f"Skipping creation of new NPC '{npc_name}' because a similar purpose already exists: {en['purpose']}"
@@ -266,7 +270,8 @@ class NPCManager:
                 if intro_output.dialogue.strip():
                     final_msg += intro_output.dialogue.strip()
 
-                self.db.save_message(
+                # Make sure NPC's introduction is visible to all characters
+                msg_id = self.db.save_message(
                     session_id=self.session_id,
                     sender=f"{npc_name} ({npc_purpose})",
                     message=final_msg,
@@ -275,6 +280,8 @@ class NPCManager:
                     emotion=intro_output.emotion.strip() if intro_output.emotion else None,
                     thoughts=intro_output.thoughts.strip() if intro_output.thoughts else None
                 )
+                self.db.add_message_visibility_for_session_characters(self.session_id, msg_id)
+
                 logger.info(f"NPC introduction for '{npc_name}': {final_msg}")
 
                 if self.llm_status_callback:
@@ -362,7 +369,8 @@ class NPCManager:
             if result.dialogue.strip():
                 final_message += result.dialogue.strip()
 
-            self.db.save_message(
+            # Ensure the NPC's reply is visible to all characters
+            msg_id = self.db.save_message(
                 session_id=self.session_id,
                 sender=f"{npc_name} ({npc_purpose})",
                 message=final_message,
@@ -371,6 +379,8 @@ class NPCManager:
                 emotion=result.emotion.strip() if result.emotion else None,
                 thoughts=result.thoughts.strip() if result.thoughts else None
             )
+            self.db.add_message_visibility_for_session_characters(self.session_id, msg_id)
+
             logger.info(f"{npc_name} responded with: {final_message}")
 
             if result.location_change_expected:
@@ -427,13 +437,15 @@ class NPCManager:
                 transition_action = ""
 
             if transition_action:
-                self.db.save_message(
+                # Make sure the transition action is visible
+                msg_id = self.db.save_message(
                     session_id=self.session_id,
                     sender=f"{npc_name} ({npc_purpose})",
                     message=f"*{transition_action}*",
                     visible=1,
                     message_type="character"
                 )
+                self.db.add_message_visibility_for_session_characters(self.session_id, msg_id)
 
             if new_loc:
                 self.db.add_npc_to_session(
@@ -542,13 +554,15 @@ class NPCManager:
                 new_app_str = old_app.strip()
             npc_purpose = self.db.get_npc_data(self.session_id, npc_name)['purpose'] or ""
             if transition_action:
-                self.db.save_message(
+                # Ensure transition action is visible
+                msg_id = self.db.save_message(
                     session_id=self.session_id,
                     sender=f"{npc_name} ({npc_purpose})",
                     message=f"*{transition_action}*",
                     visible=1,
                     message_type="character"
                 )
+                self.db.add_message_visibility_for_session_characters(self.session_id, msg_id)
 
             if new_app_str and new_app_str != old_app.strip():
                 self.db.add_npc_to_session(
