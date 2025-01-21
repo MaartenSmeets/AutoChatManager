@@ -129,41 +129,65 @@ class NPCManager:
         last_checked_msg_id: int
     ) -> int:
         """
-        Updated so that we only process the LAST new message in each cycle,
-        preventing multiple NPC manager messages between character turns.
+        A simplified approach that ALWAYS tries:
+        1) Gather recent lines
+        2) Possibly create a new NPC
+        3) Let existing NPCs reply
+        4) If no NPC spoke, post a small "no action needed" line
+        
+        This way, the NPC Manager consistently does its part on *every* turn,
+        even if there wasn't a new user or character message recently.
         """
+        logger.info("Starting check_npc_interactions.")
+
         all_msgs = self.db.get_messages(self.session_id)
-        new_messages = [
-            m for m in all_msgs
-            if m['id'] > last_checked_msg_id and m['message_type'] in ['user', 'character']
-        ]
-        if not new_messages:
-            return last_checked_msg_id
+        relevant_lines = await self.get_relevant_recent_lines(None, self.recent_dialogue_lines)
+        logger.debug(f"Retrieved {len(relevant_lines)} relevant recent lines for context.")
 
-        new_messages.sort(key=lambda x: x['id'])
-        # Only handle the last new message in this pass:
-        last_msg = new_messages[-1]
-        relevant_lines = await self.get_relevant_recent_lines(last_msg['id'], self.recent_dialogue_lines)
-        just_created_npcs = []
+        old_msg_count = len(all_msgs)
+        logger.debug(f"Old message count: {old_msg_count}")
 
-        # Try NPC creation once for the last message
         newly_created_npc = await self.handle_npc_creation_if_needed(relevant_lines, current_setting_description)
         if newly_created_npc:
-            just_created_npcs.append(newly_created_npc)
+            logger.info(f"New NPC created: {newly_created_npc}")
 
-        # Then process possible NPC replies once
-        all_npcs = self.db.get_all_npcs_in_session(self.session_id)
-        for npc_name in all_npcs:
-            if npc_name in just_created_npcs:
-                logger.info(f"Skipping immediate reply for newly introduced NPC: {npc_name}")
+        all_current_npcs = self.db.get_all_npcs_in_session(self.session_id)
+        logger.info(f"Processing replies from {len(all_current_npcs)} NPCs.")
+        for npc_name in all_current_npcs:
+            if npc_name == newly_created_npc:
                 continue
+            logger.info(f"Processing reply for NPC: {npc_name}")
             await self.process_npc_reply(npc_name, current_setting_description)
 
-        last_checked_msg_id = new_messages[-1]['id']
+        new_count = len(self.db.get_messages(self.session_id))
+        logger.debug(f"New message count after NPC replies: {new_count}")
+
+        if new_count == old_msg_count:
+            manager_name = "NPC Manager"
+            no_action_text = (
+                "*The NPC Manager quietly observes.*\n"
+                "*(No new NPC actions are needed right now.)*"
+            )
+            msg_id = self.db.save_message(
+                session_id=self.session_id,
+                sender=manager_name,
+                message=no_action_text,
+                visible=1,
+                message_type="character",
+                emotion=None,
+                thoughts=None
+            )
+            logger.info("No new NPC actions; posted no-action message.")
+            self.db.add_message_visibility_for_session_characters(self.session_id, msg_id)
+
+        if all_msgs:
+            last_checked_msg_id = all_msgs[-1]['id']
+            logger.debug(f"Updated last_checked_msg_id to {last_checked_msg_id}")
 
         await self.maybe_summarize_npc_memory()
+        logger.debug("Completed check_npc_interactions.")
         return last_checked_msg_id
-
+        
     async def handle_npc_creation_if_needed(self, recent_lines: List[str], setting_desc: str) -> Optional[str]:
         known_npcs = self.db.get_all_npcs_in_session(self.session_id)
         lines_for_prompt = "\n".join(recent_lines)

@@ -257,22 +257,76 @@ class ChatManager:
         """
         return self.get_character_names() + ["NPC Manager"]
 
+    
     def next_speaker(self) -> Optional[str]:
-        participants = self.get_participants_in_turn_order()
-        if not participants:
-            return None
+        """
+        1) Intro phase: each normal character speaks once in order.
+        2) Then round-robin: normal -> NPC Manager -> normal -> NPC Manager -> ...
+        
+        This ensures the pattern:
+        char1 intro -> char2 intro -> ...
+        then char1 -> NPC -> char2 -> NPC -> ...
+        
+        We track:
+        - self.phase: "intro" or "roundrobin"
+        - self.current_index: which normal character is next
+        - self.last_was_npc: bool to alternate in the roundrobin phase.
+        """
+        npc_name = "NPC Manager"
+        normal_participants = list(self.characters.keys())
 
-        all_msgs = self.db.get_messages(self.session_id)
-        if not all_msgs:
-            return participants[0]
+        # If no characters, return NPC Manager by default
+        if not normal_participants:
+            logger.debug("No normal participants found; defaulting speaker to NPC Manager.")
+            return npc_name
 
-        last_speaker = all_msgs[-1]['sender']
-        if last_speaker in participants:
-            idx = participants.index(last_speaker)
-            next_idx = (idx + 1) % len(participants)
-            return participants[next_idx]
-        return participants[0]
+        # Initialize phase tracking attributes if not set
+        if not hasattr(self, 'phase'):
+            self.phase = "intro"
+            logger.debug("Phase not set. Initializing phase to 'intro'.")
+        if not hasattr(self, 'current_index'):
+            self.current_index = 0
+            logger.debug("Current index not set. Initializing to 0.")
+        if not hasattr(self, 'last_was_npc'):
+            self.last_was_npc = False
+            logger.debug("Last was NPC flag not set. Initializing to False.")
 
+        # PHASE 1: INTRODUCTIONS
+        if self.phase == "intro":
+            if self.current_index < len(normal_participants):
+                next_char = normal_participants[self.current_index]
+                logger.info(f"Intro phase: Next speaker is {next_char}.")
+                self.current_index += 1
+
+                if self.current_index == len(normal_participants):
+                    logger.info("All characters introduced. Switching to roundrobin phase.")
+                    self.phase = "roundrobin"
+                    self.current_index = 0
+                    self.last_was_npc = False
+
+                return next_char
+            else:
+                logger.warning("Intro phase inconsistency detected. Switching to roundrobin phase.")
+                self.phase = "roundrobin"
+                self.current_index = 0
+                self.last_was_npc = False
+
+        # PHASE 2: ROUND ROBIN
+        if self.phase == "roundrobin":
+            if self.last_was_npc:
+                speaker = normal_participants[self.current_index]
+                logger.info(f"Roundrobin phase: Last speaker was NPC. Next speaker is {speaker}.")
+                self.current_index = (self.current_index + 1) % len(normal_participants)
+                self.last_was_npc = False
+                return speaker
+            else:
+                logger.info("Roundrobin phase: Last speaker was a normal character. Switching to NPC Manager.")
+                self.last_was_npc = True
+                return npc_name
+
+        logger.error("Unexpected state in next_speaker; defaulting to NPC Manager.")
+        return npc_name
+                
     def advance_turn(self):
         # Here we do nothing specific; left for future expansions if needed.
         pass
@@ -603,11 +657,12 @@ class ChatManager:
         """
         Generate a message for a character. 
         If 'character_name' is "NPC Manager", we handle the manager logic separately
-        and do NOT call the NPC Manager again after it finishes its own turn.
+        and do NOT call the manager again after it finishes its own turn (it decides itself).
         """
         if character_name == "NPC Manager":
             logger.info("Handling NPC Manager turn instead of normal character generation.")
             if self.npc_manager_active:
+                # The manager logic is handled here (a single turn for NPCs).
                 new_last_id = await self.npc_manager.check_npc_interactions(
                     current_setting_description=(self.current_setting_description or ""),
                     last_checked_msg_id=self.last_npc_check_msg_id
@@ -618,31 +673,36 @@ class ChatManager:
         logger.info(f"Generating interaction for character: {character_name}")
         all_msgs = self.db.get_messages(self.session_id)
         triggered_message_id = all_msgs[-1]['id'] if all_msgs else None
+
+        # First, update or generate the plan if needed.
         await self.update_character_plan(character_name, triggered_message_id)
 
-        # Check if this character has spoken before
+        # Check if this character has already spoken before. If not, we do an introduction and stop.
         char_spoken_before = any(
             m for m in all_msgs
             if m["sender"] == character_name and m["message_type"] == "character"
         )
 
-        # If this is the first time the character speaks, generate an introduction and STOP.
         if not char_spoken_before:
+            # Generate a first-time introduction message.
             await self.generate_character_introduction_message(character_name)
             return
 
+        # If we reach here, the character has spoken before => "normal" turn logic.
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
                     f"Generating next interaction for {character_name} to continue the conversation."
                 )
 
+            # Build the normal system + user prompt for LLM.
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
 
             llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
 
+            # Generate the raw Interaction from the LLM.
             interaction = await asyncio.to_thread(
                 llm.generate,
                 prompt=formatted_prompt,
@@ -664,23 +724,26 @@ class ChatManager:
                     await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
                 return
 
+            # Clean up the raw text (remove possible markdown, brackets, etc.).
             interaction.action = utils.remove_markdown(interaction.action)
             interaction.dialogue = utils.remove_markdown(interaction.dialogue)
             interaction.emotion = utils.remove_markdown(interaction.emotion)
             interaction.thoughts = utils.remove_markdown(interaction.thoughts)
 
+            # Check for repetition or placeholders, possibly re-generate if needed.
             final_interaction = await self.check_and_regenerate_if_repetitive(
                 character_name, system_prompt, formatted_prompt, interaction
             )
             if not final_interaction:
                 logger.warning(f"Repetitive or invalid output could not be resolved for {character_name}.")
-                final_interaction = interaction
+                final_interaction = interaction  # fallback to the original
 
             final_interaction.action = utils.remove_markdown(final_interaction.action)
             final_interaction.dialogue = utils.remove_markdown(final_interaction.dialogue)
             final_interaction.emotion = utils.remove_markdown(final_interaction.emotion)
             final_interaction.thoughts = utils.remove_markdown(final_interaction.thoughts)
 
+            # Combine action & dialogue for a single message text.
             if final_interaction.action.strip() and final_interaction.dialogue.strip():
                 formatted_message = f"*{final_interaction.action}*\n{final_interaction.dialogue}"
             elif final_interaction.action.strip():
@@ -690,6 +753,7 @@ class ChatManager:
             else:
                 formatted_message = ""
 
+            # Save the new message in the DB.
             msg_id = await self.add_message(
                 character_name,
                 formatted_message,
@@ -699,6 +763,7 @@ class ChatManager:
                 thoughts=final_interaction.thoughts
             )
 
+            # Check if location or appearance should be updated.
             location_was_triggered = False
             appearance_was_triggered = False
 
@@ -716,6 +781,7 @@ class ChatManager:
             else:
                 logger.info(f"No appearance change indicated for {character_name}.")
 
+            # If neither location nor appearance was triggered, we might do forced updates after N turns, etc.
             if not location_was_triggered and not appearance_was_triggered:
                 self.msg_counter_since_forced_update[character_name] = \
                     self.msg_counter_since_forced_update.get(character_name, 0) + 1
@@ -736,13 +802,9 @@ class ChatManager:
                     f"Finished generating interaction for {character_name}."
                 )
 
-            # Only call NPC Manager after a real character's turn, not after NPC Manager's own turn
-            if char_spoken_before and self.npc_manager_active:
-                new_last_id = await self.npc_manager.check_npc_interactions(
-                    current_setting_description=(self.current_setting_description or ""),
-                    last_checked_msg_id=self.last_npc_check_msg_id
-                )
-                self.last_npc_check_msg_id = new_last_id
+            # IMPORTANT: We have REMOVED the old block that immediately calls NPC Manager here!
+            # We now rely on next_speaker() to say "NPC Manager" is next, thus the manager
+            # gets its turn in a separate generate_character_message("NPC Manager") call.
 
         except Exception as e:
             logger.error(f"Error generating message for {character_name}: {e}", exc_info=True)
