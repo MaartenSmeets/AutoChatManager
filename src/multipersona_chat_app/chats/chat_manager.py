@@ -258,78 +258,85 @@ class ChatManager:
         return self.get_character_names() + ["NPC Manager"]
 
     
-    def next_speaker(self) -> Optional[str]:
+    def get_upcoming_speaker(self) -> Optional[str]:
         """
-        1) Intro phase: each normal character speaks once in order.
-        2) Then round-robin: normal -> NPC Manager -> normal -> NPC Manager -> ...
-        
-        This ensures the pattern:
-        char1 intro -> char2 intro -> ...
-        then char1 -> NPC -> char2 -> NPC -> ...
-        
-        We track:
-        - self.phase: "intro" or "roundrobin"
-        - self.current_index: which normal character is next
-        - self.last_was_npc: bool to alternate in the roundrobin phase.
+        Return who *would* speak next, WITHOUT incrementing any internal turn state.
+        Safe to call repeatedly (e.g. for a label display) without skipping anyone.
         """
         npc_name = "NPC Manager"
         normal_participants = list(self.characters.keys())
 
-        # If no characters, return NPC Manager by default
+        # If no characters, default to NPC Manager
         if not normal_participants:
-            logger.debug("No normal participants found; defaulting speaker to NPC Manager.")
             return npc_name
 
-        # Initialize phase tracking attributes if not set
+        # If needed, initialize tracking attributes
         if not hasattr(self, 'phase'):
             self.phase = "intro"
-            logger.debug("Phase not set. Initializing phase to 'intro'.")
         if not hasattr(self, 'current_index'):
             self.current_index = 0
-            logger.debug("Current index not set. Initializing to 0.")
         if not hasattr(self, 'last_was_npc'):
             self.last_was_npc = False
-            logger.debug("Last was NPC flag not set. Initializing to False.")
 
         # PHASE 1: INTRODUCTIONS
         if self.phase == "intro":
+            # If still introducing
             if self.current_index < len(normal_participants):
-                next_char = normal_participants[self.current_index]
-                logger.info(f"Intro phase: Next speaker is {next_char}.")
-                self.current_index += 1
+                return normal_participants[self.current_index]
+            # Else intro phase is done, so it should move to roundrobin
+            # But we won't forcibly fix it here, since we're not advancing.
 
-                if self.current_index == len(normal_participants):
-                    logger.info("All characters introduced. Switching to roundrobin phase.")
-                    self.phase = "roundrobin"
-                    self.current_index = 0
-                    self.last_was_npc = False
-
-                return next_char
-            else:
-                logger.warning("Intro phase inconsistency detected. Switching to roundrobin phase.")
-                self.phase = "roundrobin"
-                self.current_index = 0
-                self.last_was_npc = False
+            return normal_participants[-1]  # fallback (should not often hit)
 
         # PHASE 2: ROUND ROBIN
         if self.phase == "roundrobin":
             if self.last_was_npc:
-                speaker = normal_participants[self.current_index]
-                logger.info(f"Roundrobin phase: Last speaker was NPC. Next speaker is {speaker}.")
-                self.current_index = (self.current_index + 1) % len(normal_participants)
-                self.last_was_npc = False
-                return speaker
+                # Next is a normal character
+                return normal_participants[self.current_index]
             else:
-                logger.info("Roundrobin phase: Last speaker was a normal character. Switching to NPC Manager.")
-                self.last_was_npc = True
+                # Next is the NPC Manager
                 return npc_name
 
-        logger.error("Unexpected state in next_speaker; defaulting to NPC Manager.")
+        # If we ever reach an unexpected state, default to NPC Manager
         return npc_name
-                
-    def advance_turn(self):
-        # Here we do nothing specific; left for future expansions if needed.
-        pass
+
+
+    def proceed_turn(self) -> Optional[str]:
+        """
+        Advance the conversation turn and RETURN the speaker who now gets to speak.
+        This updates internal counters so the next call yields the next turn in sequence.
+        """
+        # We can reuse the logic in get_upcoming_speaker to figure out who is *about* to speak.
+        speaker = self.get_upcoming_speaker()
+
+        npc_name = "NPC Manager"
+        normal_participants = list(self.characters.keys())
+
+        # If no characters, just return the NPC Manager
+        if not normal_participants:
+            return npc_name
+
+        # --- Now "advance" state since we truly want to proceed. ---
+        if self.phase == "intro":
+            if self.current_index < len(normal_participants):
+                # We just used a normal character's introduction
+                self.current_index += 1
+                # If that was the last introduction, switch to round-robin
+                if self.current_index == len(normal_participants):
+                    self.phase = "roundrobin"
+                    self.current_index = 0
+                    self.last_was_npc = False
+
+        elif self.phase == "roundrobin":
+            if self.last_was_npc:
+                # We are about to speak as a normal character, so move index forward
+                self.current_index = (self.current_index + 1) % len(normal_participants)
+                self.last_was_npc = False
+            else:
+                # We are about to speak as the NPC Manager
+                self.last_was_npc = True
+
+        return speaker
 
     def get_visible_history_for_character(self, character_name: str) -> List[Dict]:
         return self.db.get_visible_messages_for_character(self.session_id, character_name)

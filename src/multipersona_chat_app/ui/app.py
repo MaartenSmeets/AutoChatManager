@@ -178,7 +178,10 @@ def show_character_details():
 
 
 def update_next_speaker_label():
-    ns = chat_manager.next_speaker()
+    """
+    For display only: use get_upcoming_speaker() so we never alter turn order.
+    """
+    ns = chat_manager.get_upcoming_speaker()
     if ns:
         if next_speaker_label is not None:
             next_speaker_label.text = f"Next speaker: {ns}"
@@ -187,6 +190,7 @@ def update_next_speaker_label():
         if next_speaker_label is not None:
             next_speaker_label.text = "No characters available."
             next_speaker_label.update()
+
 
 
 def populate_session_dropdown():
@@ -433,26 +437,32 @@ def show_chat_display():
 
 
 async def automatic_conversation():
+    """
+    If automatic chat is running, we actually proceed the turn (which increments state),
+    then generate the speaker's message. Then update the label & refresh UI.
+    """
     if chat_manager.automatic_running:
-        next_char = chat_manager.next_speaker()
-        if next_char:
-            await chat_manager.generate_character_message(next_char)
-            chat_manager.advance_turn()
-            update_next_speaker_label()
-            show_character_details.refresh()
-            show_chat_display.refresh()
-
-
-async def next_character_response():
-    if chat_manager.automatic_running:
-        return
-    next_char = chat_manager.next_speaker()
-    if next_char:
-        await chat_manager.generate_character_message(next_char)
-        chat_manager.advance_turn()
+        speaker = chat_manager.proceed_turn()
+        if speaker:
+            await chat_manager.generate_character_message(speaker)
         update_next_speaker_label()
         show_character_details.refresh()
         show_chat_display.refresh()
+
+
+async def next_character_response():
+    """
+    Manual "Next" button. Same pattern: proceed_turn() to increment, then generate the message.
+    """
+    if chat_manager.automatic_running:
+        return  # If in automatic mode, do nothing on manual "Next"
+
+    speaker = chat_manager.proceed_turn()
+    if speaker:
+        await chat_manager.generate_character_message(speaker)
+    update_next_speaker_label()
+    show_character_details.refresh()
+    show_chat_display.refresh()
 
 
 async def add_character_from_dropdown(event):
