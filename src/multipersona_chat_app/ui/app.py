@@ -121,8 +121,7 @@ def show_character_details():
             with character_details_display:
                 for c_name in char_names:
                     with ui.expansion(f"{c_name} Details", icon='person').classes('w-full mb-2 p-2 bg-gray-50 rounded-md shadow-sm'):
-                        with ui.grid(columns=2).classes('w-full'):
-                            with ui.column():
+
                                 loc = chat_manager.db.get_character_location(chat_manager.session_id, c_name)
                                 with ui.row().classes('mb-1 items-center'):
                                     ui.icon('location_on').classes('text-gray-600 mr-2')
@@ -145,7 +144,6 @@ def show_character_details():
                                     ui.icon('redeem').classes('text-gray-600 mr-2')
                                     ui.label(f"Accessories:").classes('text-sm text-gray-700 font-semibold')
                                     ui.label(f"{seg['accessories_and_held_items'] if seg['accessories_and_held_items'].strip() else '(None)'}").classes('text-sm text-gray-700')
-                            with ui.column():
                                 with ui.row().classes('mb-1 items-center'):
                                     ui.icon('accessibility_new').classes('text-gray-600 mr-2')
                                     ui.label(f"Posture:").classes('text-sm text-gray-700 font-semibold')
