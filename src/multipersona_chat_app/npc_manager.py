@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Set
 from datetime import datetime
 from pydantic import BaseModel
 import yaml
+import re
 
 from db.db_manager import DBManager
 from llm.ollama_client import OllamaClient
@@ -188,6 +189,127 @@ class NPCManager:
         logger.debug("Completed check_npc_interactions.")
         return last_checked_msg_id
         
+    async def _generate_npc_interaction_with_retry(
+        self,
+        llm_client: OllamaClient,
+        system_prompt: str,
+        user_prompt: str,
+        npc_name: str,
+        npc_purpose: str
+    ) -> Optional[NPCInteractionOutput]:
+        """
+        Helper method to generate an NPCInteractionOutput for an NPC, then check if
+        the output is too similar to recent NPC messages. If it is, regenerate up to
+        self.max_similarity_retries times. Returns None if we cannot get a valid output.
+        """
+
+        # Retrieve recent lines from the same NPC (up to last 5)
+        all_msgs = self.db.get_messages(self.session_id)
+        npc_sender_id = f"{npc_name} ({npc_purpose})"
+        same_speaker_lines = [m for m in all_msgs if m["sender"] == npc_sender_id]
+        recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
+
+        embed_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
+        if self.llm_client.user_selected_model:
+            embed_client.set_user_selected_model(self.llm_client.user_selected_model)
+
+        tries = 0
+        current_output: Optional[NPCInteractionOutput] = None
+
+        while True:
+            # If we're on the first iteration, generate normally; otherwise, generate with appended warning
+            if tries == 0:
+                raw_result = await asyncio.to_thread(
+                    llm_client.generate,
+                    prompt=user_prompt,
+                    system=system_prompt,
+                    use_cache=False
+                )
+            else:
+                # Append a warning to user_prompt to avoid the same repetition or placeholders
+                appended_warning = "\n\nIMPORTANT:\n" + "\n".join(violation_reasons) \
+                    + "\nPlease regenerate without these issues. Do not use angle brackets or repeated text."
+                revised_prompt = user_prompt + appended_warning
+
+                raw_result = await asyncio.to_thread(
+                    llm_client.generate,
+                    prompt=revised_prompt,
+                    system=system_prompt,
+                    use_cache=False
+                )
+
+            if not raw_result or not isinstance(raw_result, NPCInteractionOutput):
+                return None
+
+            current_output = raw_result
+            violation_detected = False
+            violation_reasons = []
+
+            # Clean up raw text (remove markdown just for checking placeholders, etc.)
+            action_text = remove_markdown(current_output.action or "")
+            dialogue_text = remove_markdown(current_output.dialogue or "")
+
+            # Check for trivial or placeholder output: no alphanumeric
+            if (not re.search(r'[A-Za-z0-9]', action_text)) and (not re.search(r'[A-Za-z0-9]', dialogue_text)):
+                violation_detected = True
+                violation_reasons.append("No alphanumeric characters found in both action and dialogue.")
+
+            # Check for angle bracket placeholders
+            if "<" in action_text or ">" in action_text or "<" in dialogue_text or ">" in dialogue_text:
+                violation_detected = True
+                violation_reasons.append("Angle bracket placeholders detected in output.")
+
+            # Check if dialogue is literally repeated inside action
+            if dialogue_text.strip() and dialogue_text.strip() in action_text:
+                violation_detected = True
+                violation_reasons.append("Dialogue text is repeated in the action field.")
+
+            # Compute embeddings for the new action and dialogue
+            action_embedding = embed_client.get_embedding(action_text)
+            dialogue_embedding = embed_client.get_embedding(dialogue_text)
+            both_text = (action_text + " " + dialogue_text).strip()
+            actiondialogue_embedding = embed_client.get_embedding(both_text)
+
+            # Compare action vs dialogue to avoid near-duplicates
+            cos_sim_action_dialogue = embed_client.compute_cosine_similarity(action_embedding, dialogue_embedding)
+            jac_sim_action_dialogue = embed_client.compute_jaccard_similarity(action_text, dialogue_text)
+            if (cos_sim_action_dialogue >= self.npc_similarity_threshold or
+                jac_sim_action_dialogue >= self.npc_similarity_threshold):
+                violation_detected = True
+                violation_reasons.append("Action and dialogue are too similar to each other.")
+
+            # Compare with recent speaker lines
+            if not violation_detected:
+                for old_msg_obj in recent_speaker_lines:
+                    old_msg = old_msg_obj["message"]
+                    old_embedding = embed_client.get_embedding(old_msg)
+
+                    cos_sim_action = embed_client.compute_cosine_similarity(action_embedding, old_embedding)
+                    jac_sim_action = embed_client.compute_jaccard_similarity(action_text, old_msg)
+
+                    cos_sim_dialogue = embed_client.compute_cosine_similarity(dialogue_embedding, old_embedding)
+                    jac_sim_dialogue = embed_client.compute_jaccard_similarity(dialogue_text, old_msg)
+
+                    cos_sim_both = embed_client.compute_cosine_similarity(actiondialogue_embedding, old_embedding)
+                    jac_sim_both = embed_client.compute_jaccard_similarity(both_text, old_msg)
+
+                    # If any measure is above threshold, it's too similar
+                    if (cos_sim_action >= self.npc_similarity_threshold or jac_sim_action >= self.npc_similarity_threshold or
+                        cos_sim_dialogue >= self.npc_similarity_threshold or jac_sim_dialogue >= self.npc_similarity_threshold or
+                        cos_sim_both >= self.npc_similarity_threshold or jac_sim_both >= self.npc_similarity_threshold):
+                        violation_detected = True
+                        violation_reasons.append("Output is too similar to a recent NPC message.")
+                        break
+
+            if not violation_detected:
+                # Valid output, break
+                return current_output
+
+            tries += 1
+            if tries > self.max_similarity_retries:
+                # Exceeded maximum tries
+                return None
+
     async def handle_npc_creation_if_needed(self, recent_lines: List[str], setting_desc: str) -> Optional[str]:
         known_npcs = self.db.get_all_npcs_in_session(self.session_id)
         # Create a list of known NPCs with their purposes
@@ -290,13 +412,15 @@ class NPCManager:
                     f"Generating an introduction for the newly created NPC '{npc_name}'."
                 )
 
-            intro_output = await asyncio.to_thread(
-                intro_client.generate,
-                prompt=intro_user_prompt,
-                system=intro_system_prompt,
-                use_cache=False
+            # --- UPDATED: Use our retry helper to ensure output isn't too similar ---
+            intro_output = await self._generate_npc_interaction_with_retry(
+                llm_client=intro_client,
+                system_prompt=intro_system_prompt,
+                user_prompt=intro_user_prompt,
+                npc_name=npc_name,
+                npc_purpose=creation_result.npc_purpose
             )
-            if intro_output and isinstance(intro_output, NPCInteractionOutput):
+            if intro_output:
                 intro_output.action = remove_markdown(intro_output.action)
                 intro_output.dialogue = remove_markdown(intro_output.dialogue)
 
@@ -306,7 +430,6 @@ class NPCManager:
                 if intro_output.dialogue.strip():
                     final_msg += intro_output.dialogue.strip()
 
-                # Make sure NPC's introduction is visible to all characters
                 msg_id = self.db.save_message(
                     session_id=self.session_id,
                     sender=f"{npc_name} ({npc_purpose})",
@@ -323,7 +446,7 @@ class NPCManager:
                 if self.llm_status_callback:
                     await self.llm_status_callback(f"Introduction completed for NPC '{npc_name}'.")
             else:
-                logger.debug("NPC introduction step returned no result or invalid format.")
+                logger.debug("NPC introduction step returned no result or repeated invalid output.")
 
             return npc_name
 
@@ -386,13 +509,15 @@ class NPCManager:
                 f"Generating a reply for NPC '{npc_name}' because they share location with at least one character."
             )
 
-        result = await asyncio.to_thread(
-            reply_client.generate,
-            prompt=user_prompt,
-            system=system_prompt,
-            use_cache=False
+        # --- UPDATED: Use our retry helper so we check for repetitive or placeholder output ---
+        result = await self._generate_npc_interaction_with_retry(
+            llm_client=reply_client,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            npc_name=npc_name,
+            npc_purpose=npc_purpose
         )
-        if not result or not isinstance(result, NPCInteractionOutput):
+        if not result:
             return
 
         result.action = remove_markdown(result.action)
@@ -405,7 +530,6 @@ class NPCManager:
             if result.dialogue.strip():
                 final_message += result.dialogue.strip()
 
-            # Ensure the NPC's reply is visible to all characters
             msg_id = self.db.save_message(
                 session_id=self.session_id,
                 sender=f"{npc_name} ({npc_purpose})",

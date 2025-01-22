@@ -317,6 +317,13 @@ class ChatManager:
             return npc_name
 
         # --- Now "advance" state since we truly want to proceed. ---
+        if not hasattr(self, 'phase'):
+            self.phase = "intro"
+        if not hasattr(self, 'current_index'):
+            self.current_index = 0
+        if not hasattr(self, 'last_was_npc'):
+            self.last_was_npc = False
+
         if self.phase == "intro":
             if self.current_index < len(normal_participants):
                 # We just used a normal character's introduction
@@ -325,7 +332,8 @@ class ChatManager:
                 if self.current_index == len(normal_participants):
                     self.phase = "roundrobin"
                     self.current_index = 0
-                    self.last_was_npc = False
+                    # Changed this to True so the next turn is the first character, not the NPC Manager
+                    self.last_was_npc = True
 
         elif self.phase == "roundrobin":
             if self.last_was_npc:

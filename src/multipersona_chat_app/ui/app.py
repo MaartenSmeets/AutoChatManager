@@ -591,8 +591,7 @@ def main_page():
             with ui.row().classes('w-full items-center mb-2'):
                 current_location_label = ui.label("").classes('flex-grow text-gray-700')
 
-            character_details_display = ui.column().classes('mb-4')
-            show_character_details()
+
 
             # Character selection
             with ui.row().classes('w-full items-center mb-4'):
@@ -633,7 +632,9 @@ def main_page():
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600')
             llm_status_label.visible = False
-
+            
+            character_details_display = ui.column().classes('mb-4')
+            show_character_details()
         with ui.card().style('height: 100vh; display: flex; flex-direction: column;'):
             global chat_display
             chat_display = ui.column().style('flex-grow: 1; overflow-y: auto;')
