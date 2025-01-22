@@ -390,7 +390,6 @@ def toggle_npc_manager(value: bool):
         chat_manager.disable_npc_manager()
 
 
-# NEW: Toggle handler for showing/hiding private info
 def toggle_show_private_info(value: bool):
     global show_private_info
     show_private_info = value
@@ -401,11 +400,15 @@ def toggle_show_private_info(value: bool):
 @ui.refreshable
 def show_chat_display():
     """
-    Displays the chat messages. If 'show_private_info' is True, also shows
-    emotion and thoughts. Markdown is removed before displaying private info.
+    Displays the chat messages, but omits any from the NPC Manager or any messages with visible=0.
+    If 'show_private_info' is True, also displays emotion and thoughts for each message.
     """
     chat_display.clear()
-    msgs = chat_manager.db.get_messages(chat_manager.session_id)
+
+    # Retrieve messages and exclude those from "NPC Manager" or those marked as not visible (visible=0)
+    all_msgs = chat_manager.db.get_messages(chat_manager.session_id)
+    msgs = [m for m in all_msgs if m["sender"] != "NPC Manager" and m["visible"] == 1]
+
     msgs_found = len(msgs) > 0
     if msgs_found:
         current_location_label.text = ""
@@ -421,20 +424,18 @@ def show_chat_display():
             formatted_message = f"**{name}** [{human_timestamp}]:\n\n{message}"
 
             if show_private_info:
-                # Remove markdown from emotion/thoughts
+                # Display any emotion/thoughts if present, after stripping markdown
                 emotion = remove_markdown(entry["emotion"]) if entry["emotion"] else ""
                 thoughts = remove_markdown(entry["thoughts"]) if entry["thoughts"] else ""
-                if emotion or thoughts:
-                    # Display nicely below the main message
-                    private_text = ""
+                if emotion.strip() or thoughts.strip():
+                    extra = ""
                     if emotion.strip():
-                        private_text += f"\n*Emotion:* {emotion}"
+                        extra += f"\n*Emotion:* {emotion}"
                     if thoughts.strip():
-                        private_text += f"\n*Thoughts:* {thoughts}"
-                    formatted_message += f"{private_text}"
+                        extra += f"\n*Thoughts:* {thoughts}"
+                    formatted_message += extra
 
             ui.markdown(formatted_message)
-
 
 async def automatic_conversation():
     """
