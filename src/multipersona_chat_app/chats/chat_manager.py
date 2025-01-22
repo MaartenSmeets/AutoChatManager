@@ -67,7 +67,6 @@ class ChatManager:
         self.summary_of_summaries_count = self.config.get("summary_of_summaries_count", 5)
         self.max_similarity_retries = self.config.get("max_similarity_retries", 2)
 
-        # forced location/appearance update interval
         self.forced_update_interval = self.config.get("forced_update_interval", 5)
         self.msg_counter_since_forced_update: Dict[str, int] = {}
 
@@ -102,8 +101,8 @@ class ChatManager:
                 setting = self.settings[stored_setting]
                 self.set_current_setting(
                     setting['name'],
-                    setting['description'],
-                    setting['start_location']
+                    self.db.get_current_setting_description(self.session_id) or setting['description'],
+                    self.db.get_current_location(self.session_id) or setting['start_location']
                 )
             else:
                 if settings:
@@ -119,7 +118,7 @@ class ChatManager:
 
         self.llm_client = llm_client
 
-        self.npc_manager_active = False
+        self.npc_manager_active = True
         self.last_npc_check_msg_id = 0
 
         npc_config_path = os.path.join("src", "multipersona_chat_app", "config", "npc_manager_config.yaml")
@@ -251,24 +250,101 @@ class ChatManager:
     def save_character_plan(self, char_name: str, plan: CharacterPlan):
         self.db.save_character_plan(self.session_id, char_name, plan.goal, plan.steps, plan.why_new_plan_goal)
 
-    def next_speaker(self) -> Optional[str]:
-        chars = self.get_character_names()
-        if not chars:
-            return None
+    def get_participants_in_turn_order(self) -> List[str]:
+        """
+        Returns the list of participants in the round-robin order:
+        all user-added characters + "NPC Manager" as the last one.
+        """
+        return self.get_character_names() + ["NPC Manager"]
 
-        all_msgs = self.db.get_messages(self.session_id)
-        if not all_msgs:
-            return chars[0]
+    
+    def get_upcoming_speaker(self) -> Optional[str]:
+        """
+        Return who *would* speak next, WITHOUT incrementing any internal turn state.
+        Safe to call repeatedly (e.g. for a label display) without skipping anyone.
+        """
+        npc_name = "NPC Manager"
+        normal_participants = list(self.characters.keys())
 
-        last_speaker = all_msgs[-1]['sender']
-        if last_speaker in chars:
-            idx = chars.index(last_speaker)
-            next_idx = (idx + 1) % len(chars)
-            return chars[next_idx]
-        return chars[0]
+        # If no characters, default to NPC Manager
+        if not normal_participants:
+            return npc_name
 
-    def advance_turn(self):
-        pass
+        # If needed, initialize tracking attributes
+        if not hasattr(self, 'phase'):
+            self.phase = "intro"
+        if not hasattr(self, 'current_index'):
+            self.current_index = 0
+        if not hasattr(self, 'last_was_npc'):
+            self.last_was_npc = False
+
+        # PHASE 1: INTRODUCTIONS
+        if self.phase == "intro":
+            # If still introducing
+            if self.current_index < len(normal_participants):
+                return normal_participants[self.current_index]
+            # Else intro phase is done, so it should move to roundrobin
+            # But we won't forcibly fix it here, since we're not advancing.
+
+            return normal_participants[-1]  # fallback (should not often hit)
+
+        # PHASE 2: ROUND ROBIN
+        if self.phase == "roundrobin":
+            if self.last_was_npc:
+                # Next is a normal character
+                return normal_participants[self.current_index]
+            else:
+                # Next is the NPC Manager
+                return npc_name
+
+        # If we ever reach an unexpected state, default to NPC Manager
+        return npc_name
+
+
+    def proceed_turn(self) -> Optional[str]:
+        """
+        Advance the conversation turn and RETURN the speaker who now gets to speak.
+        This updates internal counters so the next call yields the next turn in sequence.
+        """
+        # We can reuse the logic in get_upcoming_speaker to figure out who is *about* to speak.
+        speaker = self.get_upcoming_speaker()
+
+        npc_name = "NPC Manager"
+        normal_participants = list(self.characters.keys())
+
+        # If no characters, just return the NPC Manager
+        if not normal_participants:
+            return npc_name
+
+        # --- Now "advance" state since we truly want to proceed. ---
+        if not hasattr(self, 'phase'):
+            self.phase = "intro"
+        if not hasattr(self, 'current_index'):
+            self.current_index = 0
+        if not hasattr(self, 'last_was_npc'):
+            self.last_was_npc = False
+
+        if self.phase == "intro":
+            if self.current_index < len(normal_participants):
+                # We just used a normal character's introduction
+                self.current_index += 1
+                # If that was the last introduction, switch to round-robin
+                if self.current_index == len(normal_participants):
+                    self.phase = "roundrobin"
+                    self.current_index = 0
+                    # Changed this to True so the next turn is the first character, not the NPC Manager
+                    self.last_was_npc = True
+
+        elif self.phase == "roundrobin":
+            if self.last_was_npc:
+                # We are about to speak as a normal character, so move index forward
+                self.current_index = (self.current_index + 1) % len(normal_participants)
+                self.last_was_npc = False
+            else:
+                # We are about to speak as the NPC Manager
+                self.last_was_npc = True
+
+        return speaker
 
     def get_visible_history_for_character(self, character_name: str) -> List[Dict]:
         return self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -301,12 +377,6 @@ class ChatManager:
         )
         self.db.add_message_visibility_for_session_characters(self.session_id, message_id)
 
-        if self.npc_manager_active:
-            self.last_npc_check_msg_id = await self.npc_manager.check_npc_interactions(
-                current_setting_description=(self.current_setting_description or ""),
-                last_checked_msg_id=self.last_npc_check_msg_id
-            )
-
         await self.check_summarization()
         return message_id
 
@@ -332,7 +402,6 @@ class ChatManager:
                 await self.summarize_history_for_character(char_name)
 
     async def summarize_history_for_character(self, character_name: str):
-        # Create or use a local OllamaClient but ensure user-selected model is propagated
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -341,7 +410,6 @@ class ChatManager:
             await self.llm_status_callback(
                 f"Summarizing history for {character_name} because their visible messages exceeded the threshold."
             )
-
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -420,7 +488,6 @@ class ChatManager:
             await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
-        # Also ensure user-selected model is used here
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             summarize_llm.set_user_selected_model(self.llm_client.user_selected_model)
@@ -602,32 +669,55 @@ class ChatManager:
         self.automatic_running = False
 
     async def generate_character_message(self, character_name: str):
+        """
+        Generate a message for a character. 
+        If 'character_name' is "NPC Manager", we handle the manager logic separately
+        and do NOT call the manager again after it finishes its own turn (it decides itself).
+        """
+        if character_name == "NPC Manager":
+            logger.info("Handling NPC Manager turn instead of normal character generation.")
+            if self.npc_manager_active:
+                # The manager logic is handled here (a single turn for NPCs).
+                new_last_id = await self.npc_manager.check_npc_interactions(
+                    current_setting_description=(self.current_setting_description or ""),
+                    last_checked_msg_id=self.last_npc_check_msg_id
+                )
+                self.last_npc_check_msg_id = new_last_id
+            return
+
         logger.info(f"Generating interaction for character: {character_name}")
         all_msgs = self.db.get_messages(self.session_id)
         triggered_message_id = all_msgs[-1]['id'] if all_msgs else None
+
+        # First, update or generate the plan if needed.
         await self.update_character_plan(character_name, triggered_message_id)
 
+        # Check if this character has already spoken before. If not, we do an introduction and stop.
         char_spoken_before = any(
             m for m in all_msgs
             if m["sender"] == character_name and m["message_type"] == "character"
         )
 
         if not char_spoken_before:
+            # Generate a first-time introduction message.
             await self.generate_character_introduction_message(character_name)
             return
 
+        # If we reach here, the character has spoken before => "normal" turn logic.
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
                     f"Generating next interaction for {character_name} to continue the conversation."
                 )
 
+            # Build the normal system + user prompt for LLM.
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
 
             llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
 
+            # Generate the raw Interaction from the LLM.
             interaction = await asyncio.to_thread(
                 llm.generate,
                 prompt=formatted_prompt,
@@ -642,31 +732,33 @@ class ChatManager:
                         f"No interaction generated for {character_name}; the LLM returned empty."
                     )
                 return
+
             if not isinstance(interaction, Interaction):
                 logger.error(f"Invalid interaction type from LLM: {type(interaction)}. Value: {interaction}")
                 if self.llm_status_callback:
                     await self.llm_status_callback(f"Invalid or malformed LLM output for {character_name}.")
                 return
 
-            # NEW: remove markdown from emotion/thoughts as well
+            # Clean up the raw text (remove possible markdown, brackets, etc.).
             interaction.action = utils.remove_markdown(interaction.action)
             interaction.dialogue = utils.remove_markdown(interaction.dialogue)
             interaction.emotion = utils.remove_markdown(interaction.emotion)
             interaction.thoughts = utils.remove_markdown(interaction.thoughts)
 
+            # Check for repetition or placeholders, possibly re-generate if needed.
             final_interaction = await self.check_and_regenerate_if_repetitive(
                 character_name, system_prompt, formatted_prompt, interaction
             )
             if not final_interaction:
                 logger.warning(f"Repetitive or invalid output could not be resolved for {character_name}.")
-                final_interaction = interaction
+                final_interaction = interaction  # fallback to the original
 
-            # Remove markdown from final fields again, just in case
             final_interaction.action = utils.remove_markdown(final_interaction.action)
             final_interaction.dialogue = utils.remove_markdown(final_interaction.dialogue)
             final_interaction.emotion = utils.remove_markdown(final_interaction.emotion)
             final_interaction.thoughts = utils.remove_markdown(final_interaction.thoughts)
 
+            # Combine action & dialogue for a single message text.
             if final_interaction.action.strip() and final_interaction.dialogue.strip():
                 formatted_message = f"*{final_interaction.action}*\n{final_interaction.dialogue}"
             elif final_interaction.action.strip():
@@ -676,6 +768,7 @@ class ChatManager:
             else:
                 formatted_message = ""
 
+            # Save the new message in the DB.
             msg_id = await self.add_message(
                 character_name,
                 formatted_message,
@@ -685,6 +778,7 @@ class ChatManager:
                 thoughts=final_interaction.thoughts
             )
 
+            # Check if location or appearance should be updated.
             location_was_triggered = False
             appearance_was_triggered = False
 
@@ -702,6 +796,7 @@ class ChatManager:
             else:
                 logger.info(f"No appearance change indicated for {character_name}.")
 
+            # If neither location nor appearance was triggered, we might do forced updates after N turns, etc.
             if not location_was_triggered and not appearance_was_triggered:
                 self.msg_counter_since_forced_update[character_name] = \
                     self.msg_counter_since_forced_update.get(character_name, 0) + 1
@@ -721,6 +816,10 @@ class ChatManager:
                 await self.llm_status_callback(
                     f"Finished generating interaction for {character_name}."
                 )
+
+            # IMPORTANT: We have REMOVED the old block that immediately calls NPC Manager here!
+            # We now rely on next_speaker() to say "NPC Manager" is next, thus the manager
+            # gets its turn in a separate generate_character_message("NPC Manager") call.
 
         except Exception as e:
             logger.error(f"Error generating message for {character_name}: {e}", exc_info=True)
@@ -1188,7 +1287,6 @@ class ChatManager:
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
 
-        # We'll create a new embed_client each time, but ensure user-selected model is used for embeddings
         embed_client = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
         if self.llm_client:
             embed_client.set_user_selected_model(self.llm_client.user_selected_model)
@@ -1204,6 +1302,7 @@ class ChatManager:
             violation_detected = False
             violation_reasons = []
 
+            # Minimal check for empty or placeholder text
             if (not re.search(r'[A-Za-z0-9]', action_text)) and (not re.search(r'[A-Za-z0-9]', dialogue_text)):
                 violation_detected = True
                 violation_reasons.append(
@@ -1333,9 +1432,6 @@ class ChatManager:
             all_summaries = self.db.get_all_summaries(self.session_id, c_name)
             summaries_text = "\n".join(all_summaries) if all_summaries else ""
 
-            #
-            # Location from scratch (structured)
-            #
             location_llm = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=LocationFromScratch

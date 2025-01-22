@@ -3,7 +3,7 @@ import uuid
 import asyncio
 import yaml
 from datetime import datetime
-from nicegui import ui, app, run
+from nicegui import ui, app, run, events
 import logging
 from typing import List, Dict
 from llm.ollama_client import OllamaClient
@@ -35,6 +35,10 @@ auto_timer = None
 current_location_label = None
 llm_status_label = None
 character_details_display = None
+settings_expansion = None
+session_expansion = None
+model_expansion = None
+toggles_expansion = None
 
 notification_queue = asyncio.Queue()
 
@@ -67,7 +71,7 @@ def consume_notifications():
 def init_chat_manager(session_id: str, settings: List[Dict]):
     """
     Initialize the global ChatManager with the given session_id and settings.
-    Also create global LLM clients, ensuring we share the user-selected model 
+    Also create global LLM clients, ensuring we share the user-selected model
     across the entire application code.
     """
     global chat_manager, llm_client, introduction_llm_client
@@ -93,12 +97,10 @@ def refresh_added_characters():
         added_characters_container.clear()
         for char_name in chat_manager.get_character_names():
             with added_characters_container:
-                with ui.card().classes('p-2 flex items-center'):
-                    ui.label(char_name).classes('flex-grow')
-                    ui.button(
-                        'Remove',
-                        on_click=lambda _, name=char_name: asyncio.create_task(remove_character_async(name)),
-                    ).classes('ml-2 bg-red-500 text-white')
+                with ui.chip(char_name).classes('gap-1'):
+                    ui.icon('person', size='sm')
+                    ui.label(char_name)
+                    ui.icon('close', size='sm', color='red').on('click', lambda _, name=char_name: asyncio.create_task(remove_character_async(name))).props('size=sm')
     else:
         logger.error("added_characters_container is not initialized.")
 
@@ -114,71 +116,73 @@ def show_character_details():
         char_names = chat_manager.get_character_names()
         if not char_names:
             with character_details_display:
-                ui.label("No characters added yet.")
+                ui.label("No characters added yet.").classes('text-gray-600')
         else:
             with character_details_display:
                 for c_name in char_names:
-                    with ui.card().classes('w-full mb-4 p-4 bg-gray-50'):
-                        ui.label(c_name).classes('text-lg font-bold mb-2 text-blue-600')
+                    with ui.expansion(f"{c_name} Details", icon='person').classes('w-full mb-2 p-2 bg-gray-50 rounded-md shadow-sm'):
 
-                        loc = chat_manager.db.get_character_location(chat_manager.session_id, c_name)
-                        with ui.row().classes('mb-2'):
-                            ui.icon('location_on').classes('text-gray-600 mr-2')
-                            ui.label(f"Location: {loc if loc.strip() else '(Unknown)'}").classes('text-sm text-gray-700')
+                                loc = chat_manager.db.get_character_location(chat_manager.session_id, c_name)
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('location_on').classes('text-gray-600 mr-2')
+                                    ui.label(f"Location:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{loc if loc.strip() else '(Unknown)'}").classes('text-sm text-gray-700')
 
-                        # Show appearance subfields
-                        seg = chat_manager.db.get_current_appearance_segments(chat_manager.session_id, c_name)
+                                seg = chat_manager.db.get_current_appearance_segments(chat_manager.session_id, c_name)
 
-                        # Hair
-                        with ui.row().classes('mb-1'):
-                            ui.icon('face_retouching_natural').classes('text-gray-600 mr-2')
-                            ui.label(f"Hair: {seg['hair'] if seg['hair'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('face_retouching_natural').classes('text-gray-600 mr-2')
+                                    ui.label(f"Hair:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{seg['hair'] if seg['hair'].strip() else '(None)'}").classes('text-sm text-gray-700')
 
-                        # Clothing
-                        with ui.row().classes('mb-1'):
-                            ui.icon('checkroom').classes('text-gray-600 mr-2')
-                            ui.label(f"Clothing: {seg['clothing'] if seg['clothing'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('checkroom').classes('text-gray-600 mr-2')
+                                    ui.label(f"Clothing:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{seg['clothing'] if seg['clothing'].strip() else '(None)'}").classes('text-sm text-gray-700')
 
-                        # Accessories
-                        with ui.row().classes('mb-1'):
-                            ui.icon('redeem').classes('text-gray-600 mr-2')
-                            ui.label(f"Accessories/Held Items: {seg['accessories_and_held_items'] if seg['accessories_and_held_items'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('redeem').classes('text-gray-600 mr-2')
+                                    ui.label(f"Accessories:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{seg['accessories_and_held_items'] if seg['accessories_and_held_items'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('accessibility_new').classes('text-gray-600 mr-2')
+                                    ui.label(f"Posture:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{seg['posture_and_body_language'] if seg['posture_and_body_language'].strip() else '(None)'}").classes('text-sm text-gray-700')
 
-                        # Posture
-                        with ui.row().classes('mb-1'):
-                            ui.icon('accessibility_new').classes('text-gray-600 mr-2')
-                            ui.label(f"Posture & Body Language: {seg['posture_and_body_language'] if seg['posture_and_body_language'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('mood').classes('text-gray-600 mr-2')
+                                    ui.label(f"Expression:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{seg['facial_expression'] if seg['facial_expression'].strip() else '(None)'}").classes('text-sm text-gray-700')
 
-                        # Facial Expression
-                        with ui.row().classes('mb-1'):
-                            ui.icon('mood').classes('text-gray-600 mr-2')
-                            ui.label(f"Facial Expression: {seg['facial_expression'] if seg['facial_expression'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-center'):
+                                    ui.icon('info').classes('text-gray-600 mr-2')
+                                    ui.label(f"Other Details:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(f"{seg['other_relevant_details'] if seg['other_relevant_details'].strip() else '(None)'}").classes('text-sm text-gray-700')
 
-                        # Other
-                        with ui.row().classes('mb-1'):
-                            ui.icon('info').classes('text-gray-600 mr-2')
-                            ui.label(f"Other Relevant Details: {seg['other_relevant_details'] if seg['other_relevant_details'].strip() else '(None)'}").classes('text-sm text-gray-700')
-
-                        # Plan (only if show_private_info is True)
-                        if show_private_info:
-                            plan_data = chat_manager.db.get_character_plan(chat_manager.session_id, c_name)
-                            if plan_data:
-                                with ui.row().classes('mt-2'):
-                                    ui.icon('flag').classes('text-gray-600 mr-2')
-                                    ui.label(f"Goal: {plan_data['goal'] or '(No goal)'}")
-                                with ui.row().classes('mb-2'):
-                                    ui.icon('list').classes('text-gray-600 mr-2')
-                                    steps_text = plan_data['steps'] if plan_data['steps'] else []
-                                    ui.label(f"Steps: {steps_text}")
-                            else:
-                                with ui.row().classes('mb-2'):
-                                    ui.label("No plan found (it may be generated soon).")
+                                if show_private_info:
+                                    plan_data = chat_manager.db.get_character_plan(chat_manager.session_id, c_name)
+                                    if plan_data:
+                                        with ui.row().classes('mt-2 items-center'):
+                                            ui.icon('flag').classes('text-gray-600 mr-2')
+                                            ui.label(f"Goal:").classes('text-sm text-gray-700 font-semibold')
+                                            ui.label(f"{plan_data['goal'] or '(No goal)'}").classes('text-sm text-gray-700')
+                                        with ui.row().classes('mb-1 items-top'):
+                                            ui.icon('list').classes('text-gray-600 mr-2')
+                                            ui.label(f"Steps:").classes('text-sm text-gray-700 font-semibold')
+                                            steps_text = plan_data['steps'] if plan_data['steps'] else []
+                                            ui.label(f"{steps_text}").classes('text-sm text-gray-700')
+                                    else:
+                                        with ui.row().classes('mb-2'):
+                                            ui.label("No plan found (it may be generated soon).").classes('text-gray-600 italic text-sm')
     else:
         logger.error("character_details_display is not initialized.")
 
 
 def update_next_speaker_label():
-    ns = chat_manager.next_speaker()
+    """
+    For display only: use get_upcoming_speaker() so we never alter turn order.
+    """
+    ns = chat_manager.get_upcoming_speaker()
     if ns:
         if next_speaker_label is not None:
             next_speaker_label.text = f"Next speaker: {ns}"
@@ -187,6 +191,7 @@ def update_next_speaker_label():
         if next_speaker_label is not None:
             next_speaker_label.text = "No characters available."
             next_speaker_label.update()
+
 
 
 def populate_session_dropdown():
@@ -330,6 +335,7 @@ def load_session(session_id: str):
     has_msgs = len(chat_msgs) > 0
     settings_dropdown.disabled = has_msgs
     settings_dropdown.update()
+    settings_expansion.value = has_msgs # Collapse settings after session start
 
     is_session_being_loaded = False
 
@@ -360,6 +366,7 @@ def select_setting(event):
         current_location_label.text = setting['start_location']
         current_location_label.update()
         show_character_details.refresh()
+        settings_expansion.value = True # Collapse settings after selection
 
 
 def toggle_automatic_chat(e):
@@ -386,7 +393,6 @@ def toggle_npc_manager(value: bool):
         chat_manager.disable_npc_manager()
 
 
-# NEW: Toggle handler for showing/hiding private info
 def toggle_show_private_info(value: bool):
     global show_private_info
     show_private_info = value
@@ -397,11 +403,15 @@ def toggle_show_private_info(value: bool):
 @ui.refreshable
 def show_chat_display():
     """
-    Displays the chat messages. If 'show_private_info' is True, also shows
-    emotion and thoughts. Markdown is removed before displaying private info.
+    Displays the chat messages, but omits any from the NPC Manager or any messages with visible=0.
+    If 'show_private_info' is True, also displays emotion and thoughts for each message.
     """
     chat_display.clear()
-    msgs = chat_manager.db.get_messages(chat_manager.session_id)
+
+    # Retrieve messages and exclude those from "NPC Manager" or those marked as not visible (visible=0)
+    all_msgs = chat_manager.db.get_messages(chat_manager.session_id)
+    msgs = [m for m in all_msgs if m["sender"] != "NPC Manager" and m["visible"] == 1]
+
     msgs_found = len(msgs) > 0
     if msgs_found:
         current_location_label.text = ""
@@ -417,42 +427,46 @@ def show_chat_display():
             formatted_message = f"**{name}** [{human_timestamp}]:\n\n{message}"
 
             if show_private_info:
-                # Remove markdown from emotion/thoughts
+                # Display any emotion/thoughts if present, after stripping markdown
                 emotion = remove_markdown(entry["emotion"]) if entry["emotion"] else ""
                 thoughts = remove_markdown(entry["thoughts"]) if entry["thoughts"] else ""
-                if emotion or thoughts:
-                    # Display nicely below the main message
-                    private_text = ""
+                if emotion.strip() or thoughts.strip():
+                    extra = ""
                     if emotion.strip():
-                        private_text += f"\n*Emotion:* {emotion}"
+                        extra += f"\n\n*Emotion:* {emotion}"
                     if thoughts.strip():
-                        private_text += f"\n*Thoughts:* {thoughts}"
-                    formatted_message += f"{private_text}"
+                        extra += f"\n\n*Thoughts:* {thoughts}"
+                    formatted_message += extra
 
             ui.markdown(formatted_message)
 
-
 async def automatic_conversation():
+    """
+    If automatic chat is running, we actually proceed the turn (which increments state),
+    then generate the speaker's message. Then update the label & refresh UI.
+    """
     if chat_manager.automatic_running:
-        next_char = chat_manager.next_speaker()
-        if next_char:
-            await chat_manager.generate_character_message(next_char)
-            chat_manager.advance_turn()
-            update_next_speaker_label()
-            show_character_details.refresh()
-            show_chat_display.refresh()
-
-
-async def next_character_response():
-    if chat_manager.automatic_running:
-        return
-    next_char = chat_manager.next_speaker()
-    if next_char:
-        await chat_manager.generate_character_message(next_char)
-        chat_manager.advance_turn()
+        speaker = chat_manager.proceed_turn()
+        if speaker:
+            await chat_manager.generate_character_message(speaker)
         update_next_speaker_label()
         show_character_details.refresh()
         show_chat_display.refresh()
+
+
+async def next_character_response():
+    """
+    Manual "Next" button. Same pattern: proceed_turn() to increment, then generate the message.
+    """
+    if chat_manager.automatic_running:
+        return  # If in automatic mode, do nothing on manual "Next"
+
+    speaker = chat_manager.proceed_turn()
+    if speaker:
+        await chat_manager.generate_character_message(speaker)
+    update_next_speaker_label()
+    show_character_details.refresh()
+    show_chat_display.refresh()
 
 
 async def add_character_from_dropdown(event):
@@ -532,100 +546,102 @@ def main_page():
     global character_dropdown, added_characters_container
     global next_speaker_label, next_button, settings_dropdown, setting_description_label
     global session_dropdown, chat_display, current_location_label, llm_status_label
-    global character_details_display
+    global character_details_display, settings_expansion, session_expansion, model_expansion, toggles_expansion
     global local_model_dropdown
     global ALL_CHARACTERS, ALL_SETTINGS
 
     ALL_CHARACTERS = get_available_characters("src/multipersona_chat_app/characters")
     ALL_SETTINGS = load_settings()
 
-    with ui.grid(columns=2).style('grid-template-columns: 1fr 2fr; height: 100vh;'):
-        with ui.card().style('height: 100vh; overflow-y: auto;'):
+    with ui.grid(columns=2).style('grid-template-columns: 350px 1fr; height: 100vh;'): # Adjusted column width for settings
+        with ui.card().style('height: 100vh; overflow-y: auto; padding: 16px; display: flex; flex-direction: column;'): # Added padding and flex layout
             ui.label('Multipersona Chat Application').classes('text-2xl font-bold mb-4')
 
-            # Local model dropdown
-            with ui.row().classes('w-full items-center mb-4'):
-                ui.label("Local Model:").classes('w-1/4')
-                local_model_dropdown = ui.select(
-                    options=[],
-                    on_change=on_local_model_select,
-                    label="Available local models"
-                ).classes('flex-grow')
-                ui.button("Refresh Models", on_click=lambda: asyncio.create_task(refresh_local_models())).classes('ml-2')
+            settings_expansion = ui.expansion('Session & Model Settings', icon='settings').props('group="settings-group"').classes('w-full mb-4')
+            with settings_expansion:
+                session_expansion = ui.expansion('Session Management', icon='folder', value=True).props('group="settings-subgroup"').classes('w-full mb-2')
+                with session_expansion:
+                    with ui.row().classes('w-full items-center mb-2'):
+                        ui.label("Session:").classes('w-1/3')
+                        session_dropdown = ui.select(
+                            options=[s['name'] for s in chat_manager.db.get_all_sessions()],
+                            label="Choose session",
+                        ).classes('flex-grow')
+                        ui.button("New", on_click=create_new_session, icon='add').props('outline').classes('ml-1')
+                        ui.button("Delete", on_click=delete_session, icon='delete', color='red').props('outline').classes('ml-1')
 
-            # Session handling
-            with ui.row().classes('w-full items-center mb-4'):
-                ui.label("Session:").classes('w-1/4')
-                session_dropdown = ui.select(
-                    options=[s['name'] for s in chat_manager.db.get_all_sessions()],
-                    label="Choose a session",
-                ).classes('flex-grow')
-                ui.button("New Session", on_click=create_new_session).classes('ml-2')
-                ui.button("Delete Session", on_click=delete_session).classes('ml-2 bg-red-500 text-white')
+                model_expansion = ui.expansion('Model Selection', icon='cpu', value=True).props('group="settings-subgroup"').classes('w-full mb-2')
+                with model_expansion:
+                    with ui.row().classes('w-full items-center mb-2'):
+                        ui.label("Local Model:").classes('w-1/3')
+                        local_model_dropdown = ui.select(
+                            options=[],
+                            on_change=on_local_model_select,
+                            label="Available models"
+                        ).classes('flex-grow')
+                        ui.button("Refresh", on_click=lambda: asyncio.create_task(refresh_local_models()), icon='refresh').props('outline').classes('ml-1')
 
-            # Setting selection
-            with ui.row().classes('w-full items-center mb-4'):
-                ui.label("Select Setting:").classes('w-1/4')
-                settings_dropdown = ui.select(
-                    options=[s['name'] for s in ALL_SETTINGS],
-                    on_change=select_setting,
-                    label="Choose a setting"
-                ).classes('flex-grow')
+                with ui.row().classes('w-full items-center mb-2'):
+                    ui.label("Setting:").classes('w-1/3')
+                    settings_dropdown = ui.select(
+                        options=[s['name'] for s in ALL_SETTINGS],
+                        on_change=select_setting,
+                        label="Choose setting"
+                    ).classes('flex-grow')
 
-            # Setting info
-            with ui.row().classes('w-full items-center mb-2'):
-                ui.label("Setting Description:").classes('w-1/4')
-                setting_description_label = ui.label("(Not set)").classes('flex-grow text-gray-700')
+                with ui.row().classes('w-full wrap items-start mb-2'): # Adjusted to wrap and items-start
+                    ui.label("Setting Description:").classes('w-full') # Full width label
+                    setting_description_label = ui.label("(Not set)").classes('text-gray-700 w-full') # Full width description, wrap text
 
-            with ui.row().classes('w-full items-center mb-2'):
-                current_location_label = ui.label("").classes('flex-grow text-gray-700')
+                with ui.row().classes('w-full items-center mb-4'):
+                    current_location_label = ui.label("").classes('text-gray-700')
 
-            character_details_display = ui.column().classes('mb-4')
-            show_character_details()
+            toggles_expansion = ui.expansion('Toggles', icon='toggle_on', value=False).props('group="settings-group"').classes('w-full mb-4')
+            with toggles_expansion:
+                with ui.row().classes('w-full items-center mb-2'):
+                    auto_switch = ui.switch('Automatic Chat', value=False, on_change=toggle_automatic_chat).classes('mr-2')
+                    npc_switch = ui.switch('NPC Manager Active', value=True, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
+                    private_info_switch = ui.switch('Show Private Info', value=True, on_change=lambda e: toggle_show_private_info(e.value)).classes('mr-2')
 
-            # Character selection
-            with ui.row().classes('w-full items-center mb-4'):
-                ui.label("Select Character:").classes('w-1/4')
-                character_dropdown = ui.select(
-                    options=list(ALL_CHARACTERS.keys()),
-                    on_change=lambda e: asyncio.create_task(add_character_from_dropdown(e)),
-                    label="Choose a character"
-                ).classes('flex-grow')
 
             with ui.column().classes('w-full mb-4'):
-                ui.label("Added Characters:").classes('font-semibold mb-2')
-                added_characters_container = ui.row().classes('flex-wrap gap-2')
+                ui.label("Characters").classes('text-lg font-semibold mb-2') # More prominent label
+                with ui.row().classes('w-full items-center mb-2'): # Row for dropdown and label
+                    ui.label("Add Character:").classes('w-1/3')
+                    character_dropdown = ui.select(
+                        options=list(ALL_CHARACTERS.keys()),
+                        on_change=lambda e: asyncio.create_task(add_character_from_dropdown(e)),
+                        label="Choose character"
+                    ).classes('flex-grow')
+
+                added_characters_container = ui.row().classes('flex-wrap gap-2') # Chips container
                 refresh_added_characters()
 
-            with ui.row().classes('w-full items-center mb-4'):
-                auto_switch = ui.switch('Automatic Chat', value=False, on_change=toggle_automatic_chat).classes('mr-2')
-                npc_switch = ui.switch('NPC Manager Active', value=True, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
+            with ui.row().classes('w-full items-center justify-between mb-2'): # Space between labels and button
+                next_speaker_label = ui.label("Next speaker:").classes('text-gray-800')
+                update_next_speaker_label()
+                next_button = ui.button("Next Turn", on_click=lambda: asyncio.create_task(next_character_response()), icon='skip_next').props('outline')
+                next_button.enabled = not chat_manager.automatic_running
+                next_button.update()
 
-            # NEW: switch to show/hide private info
-            private_info_switch = ui.switch('Show Private Info', value=True, on_change=lambda e: toggle_show_private_info(e.value)).classes('mr-2')
-
-            global next_speaker_label
-            next_speaker_label = ui.label("Next speaker:")
-            update_next_speaker_label()
-
-            global next_button
-            next_button = ui.button("Next", on_click=lambda: asyncio.create_task(next_character_response()))
-            next_button.props('outline')
-            next_button.enabled = not chat_manager.automatic_running
-            next_button.update()
 
             ui.button(
-                "Update All Characters Info (Location & Appearance)",
-                on_click=lambda: asyncio.create_task(update_all_characters_info())
-            ).classes('mt-4 bg-green-500 text-white')
+                "Update All Character Info",
+                on_click=lambda: asyncio.create_task(update_all_characters_info()),
+                icon='sync'
+            ).props('outline').classes('mt-2 w-full') # Full width button, more descriptive text
 
             global llm_status_label
-            llm_status_label = ui.label("").classes('text-orange-600')
+            llm_status_label = ui.label("").classes('text-orange-600 mt-2')
             llm_status_label.visible = False
 
-        with ui.card().style('height: 100vh; display: flex; flex-direction: column;'):
+            character_details_display = ui.column().classes('mt-4 w-full') # Added margin top
+            show_character_details()
+
+
+        with ui.card().style('height: 100vh; display: flex; flex-direction: column; padding: 16px;').classes('shadow-md'): # Added padding and shadow
             global chat_display
-            chat_display = ui.column().style('flex-grow: 1; overflow-y: auto;')
+            chat_display = ui.column().style('flex-grow: 1; overflow-y: auto;').classes('p-4') # Added padding to chat display
             show_chat_display()
 
     session_dropdown.on('change', on_session_select)
