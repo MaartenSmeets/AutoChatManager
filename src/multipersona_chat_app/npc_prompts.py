@@ -16,13 +16,16 @@ Output JSON with these keys exactly:
   "npc_appearance": "<Short descriptive line>",
   "npc_location": "<Short location or setting snippet>"
 }}
-Note: No extra keys, no angle brackets, no disclaimers. When an individual, the NPC should have a personal first name. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC. If a crowd or group, use a descriptive label.
+Note: No extra keys, no angle brackets, no disclaimers. Do not mention NPC. When an individual, the NPC should have a personal first name. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC. If a crowd or group, use a descriptive label.
 
 """
 
 NPC_CREATION_USER_PROMPT = r"""
-Check the recent lines of dialogue to see if a new NPC is needed.
-Consider if the user or a character addresses a 'barkeeper', 'receptionist', 'random crowd', or any new local figure not previously introduced.
+Check the recent lines of dialogue to see if a new NPC is required to interact with the main characters.
+Consider if a main character addresses a 'barkeeper', 'receptionist', 'random crowd', or someone else who is not a main character of known NPC.
+
+Main characters:
+{main_characters}
 
 Recent lines:
 {recent_lines}
@@ -33,7 +36,7 @@ Known active NPCs:
 Setting:
 {setting_description}
 
-If a new NPC is needed, produce `should_create_npc=true` and fill the other keys. If no new NPC is needed, produce `should_create_npc=false` and empty strings for the other fields.
+If a new NPC is needed, produce `should_create_npc=true` and fill the other keys. If no new NPC is needed, produce `should_create_npc=false` and empty strings for the other fields. Do not create characters which are mentioned as main characters or known NPCs.
 """
 
 # Updated to encourage seductive, sensory-rich introductions when appropriate
@@ -57,7 +60,7 @@ Return JSON with the fields:
   "location_change_expected": false,
   "appearance_change_expected": false
 }}
-No angle brackets, no disclaimers.
+No angle brackets, no disclaimers. Do not mention NPC. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC.
 """
 
 NPC_INTRO_USER_PROMPT = r"""
@@ -93,7 +96,7 @@ Return JSON with the fields:
   "appearance_change_expected": <true or false>
 }}
 
-No angle brackets, no disclaimers.
+No angle brackets, no disclaimers. Do not mention NPC. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC.
 """
 
 NPC_REPLY_USER_PROMPT = r"""
@@ -108,7 +111,7 @@ Other NPCs in this session:
 {all_npcs}
 
 Reply concisely as an NPC, fitting your purpose and context. Only speak or act if the context calls for it. 
-If no direct involvement, you can remain quiet (dialogue/action empty). 
+If no direct involvement, you can remain quiet (dialogue/action empty). Do not mention NPC.
 Return JSON with keys: dialogue, action, emotion, thoughts, location_change_expected, appearance_change_expected.
 No angle brackets, no disclaimers.
 """

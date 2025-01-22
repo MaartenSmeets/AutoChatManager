@@ -172,7 +172,7 @@ class NPCManager:
                 session_id=self.session_id,
                 sender=manager_name,
                 message=no_action_text,
-                visible=1,
+                visible=0,
                 message_type="character",
                 emotion=None,
                 thoughts=None
@@ -190,14 +190,17 @@ class NPCManager:
         
     async def handle_npc_creation_if_needed(self, recent_lines: List[str], setting_desc: str) -> Optional[str]:
         known_npcs = self.db.get_all_npcs_in_session(self.session_id)
+        main_characters = self.db.get_character_names(self.session_id)
         lines_for_prompt = "\n".join(recent_lines)
         known_str = ", ".join(known_npcs) if known_npcs else "(none)"
+        mainchar_str = ", ".join(main_characters) if main_characters else "(none)"
 
         system_prompt = NPC_CREATION_SYSTEM_PROMPT
         user_prompt = NPC_CREATION_USER_PROMPT.format(
             recent_lines=lines_for_prompt,
             known_npcs=known_str,
-            setting_description=setting_desc
+            setting_description=setting_desc,
+            main_characters=mainchar_str
         )
 
         creation_client = OllamaClient(
@@ -227,7 +230,9 @@ class NPCManager:
             if npc_name in known_npcs:
                 logger.info(f"NPC '{npc_name}' already exists. Skipping creation.")
                 return None
-
+            if npc_name in main_characters:
+                logger.info(f"NPC name '{npc_name}' matches a main character. Skipping creation.")
+                return None
             # Additional check to be more conservative: skip if a similar NPC purpose already exists
             existing_npc_data = [self.db.get_npc_data(self.session_id, npc) for npc in known_npcs]
             new_purpose_lower = creation_result.npc_purpose.lower()

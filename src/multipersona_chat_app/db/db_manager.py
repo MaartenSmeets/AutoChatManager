@@ -700,6 +700,17 @@ class DBManager:
         """
         all_aps = self.get_all_character_appearances(session_id)
         return {name: ap for name, ap in all_aps.items() if name != exclude_character}
+    
+    def get_character_names(self, session_id: str) -> List[str]:
+        """
+        Retrieve a list of all characters.
+        """
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('SELECT character_name FROM session_characters WHERE session_id = ?', (session_id,))
+        rows = c.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
 
     # Messages
     def save_message(self,
