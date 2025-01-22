@@ -190,9 +190,16 @@ class NPCManager:
         
     async def handle_npc_creation_if_needed(self, recent_lines: List[str], setting_desc: str) -> Optional[str]:
         known_npcs = self.db.get_all_npcs_in_session(self.session_id)
+        # Create a list of known NPCs with their purposes
+        known_npcs_with_purposes = []
+        for npc in known_npcs:
+            data = self.db.get_npc_data(self.session_id, npc)
+            if data:
+                known_npcs_with_purposes.append(f"{npc} ({data['purpose']})")
+
         main_characters = self.db.get_character_names(self.session_id)
         lines_for_prompt = "\n".join(recent_lines)
-        known_str = ", ".join(known_npcs) if known_npcs else "(none)"
+        known_str = ", ".join(known_npcs_with_purposes) if known_npcs_with_purposes else "(none)"
         mainchar_str = ", ".join(main_characters) if main_characters else "(none)"
 
         system_prompt = NPC_CREATION_SYSTEM_PROMPT

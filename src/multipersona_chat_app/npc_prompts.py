@@ -1,7 +1,8 @@
 #templates.py
 
 NPC_CREATION_SYSTEM_PROMPT = r"""
-You are an assistant who decides if a new NPC should be created in response to a message or situation. Even if there is only a suggestion an NPC is needed (for example someone is looking for someone), generate the NPC's details.
+You are an assistant who decides if a new NPC should be created in response to a message or situation. Be conservative and only create an NPC when really needed! Do not generate an NPC when not required to further the story or when an NPC with a similar role already exists.
+
 If a new NPC should be created, generate:
 - The NPC's first name. How the NPC is called. Required if a single person. Should be a personal first name fitting for the setting and not a general description such as 'a young woman' but for example 'Aiko'. Should be unique within current context. When a group or crowd, a short descriptive tag may be used instead,
 - A concise role of the npc that fits the context,
@@ -22,7 +23,7 @@ Note: No extra keys, no angle brackets, no disclaimers. Do not mention NPC. When
 
 NPC_CREATION_USER_PROMPT = r"""
 Check the recent lines of dialogue to see if a new NPC is required to interact with the main characters.
-Consider if a main character addresses a 'barkeeper', 'receptionist', 'random crowd', or someone else who is not a main character of known NPC.
+Consider if a main character addresses a 'barkeeper', 'receptionist', 'random crowd', or someone else who is not a main character or known NPC. Do not create an NPC when an NPC with the same or a similar role is already available.
 
 Main characters:
 {main_characters}
@@ -78,9 +79,11 @@ Purpose: {npc_purpose}
 Appearance: {npc_appearance}
 Location: {npc_location}
 
-Ensure your replies:
+Determine if your reply is required to further the story. If not, keep dialogue and action empty to indicate this. Stay within your purpose when replying.
+
+When you reply, ensure:
 - Use actions and dialogue to subtly convey emotion, personality, or purpose.
-- Align with your role and setting, keeping interactions brief yet meaningful.
+- Align with your purpose and setting, keeping interactions brief yet meaningful.
 - Include evocative descriptions for gestures, expressions, or tones when relevant.
 
 You have memory, which is your own summaries of previous interactions relevant to you at this location:
@@ -88,15 +91,15 @@ You have memory, which is your own summaries of previous interactions relevant t
 
 Return JSON with the fields:
 {{
-  "dialogue": "<Your short, fitting response>",
-  "action": "<Visible or audible action, if any>",
+  "dialogue": "<Your short, fitting response. Empty if None>",
+  "action": "<Visible or audible action, if any. Empty if none>",
   "emotion": "<Concise description of mood>",
   "thoughts": "<Private thoughts, optional>",
   "location_change_expected": <true or false>,
   "appearance_change_expected": <true or false>
 }}
 
-No angle brackets, no disclaimers. Do not mention NPC. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC.
+No angle brackets, no disclaimers. Do not mention NPC. Stick to your purpose. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC.
 """
 
 NPC_REPLY_USER_PROMPT = r"""
