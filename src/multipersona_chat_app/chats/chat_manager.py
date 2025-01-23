@@ -1,5 +1,3 @@
-# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/chats/chat_manager.py
-
 import os
 import logging
 from typing import List, Dict, Tuple, Optional, Set
@@ -80,14 +78,7 @@ class ChatManager:
         db_path = os.path.join("output", "conversations.db")
         self.db = DBManager(db_path)
 
-        moral_guidelines_path = os.path.join("src", "multipersona_chat_app", "config", "moral_guidelines.yaml")
-        try:
-            with open(moral_guidelines_path, 'r') as f:
-                mg_data = yaml.safe_load(f)
-                self.moral_guidelines = mg_data.get('moral_guidelines', '')
-        except Exception as e:
-            logger.error(f"Error loading moral guidelines: {e}")
-            self.moral_guidelines = ""
+        self.moral_guidelines = utils.get_moral_guidelines()
 
         # Ensure the session exists in DB
         existing_sessions = {s['session_id']: s for s in self.db.get_all_sessions()}
@@ -135,6 +126,9 @@ class ChatManager:
         )
 
         self.llm_status_callback = None
+        # Track introduction status locally
+        self._introduction_given: Dict[str, bool] = {}
+        self.initialize_introduction_status()
 
     @staticmethod
     def load_config(config_path: str) -> dict:
@@ -199,7 +193,7 @@ class ChatManager:
 
     def get_character_names(self) -> List[str]:
         """
-        Returns the list of *PCs* that were explicitly added by the user from YAML. 
+        Returns the list of *PCs* that were explicitly added by the user from YAML.
         (Not including NPCs created mid-session.)
         """
         return list(self.characters.keys())
@@ -208,6 +202,7 @@ class ChatManager:
         """
         The user manually added a PC from the YAML library. We store it in self.characters
         and also ensure it is in session_characters + character_metadata(is_npc=False).
+        Additionally, we set the introduction status based on existing messages.
         """
         self.characters[char_name] = char_instance
         current_session_loc = self.db.get_current_location(self.session_id) or ""
@@ -235,15 +230,26 @@ class ChatManager:
         self.ensure_character_plan_exists(char_name)
         self.msg_counter_since_forced_update[char_name] = 0
 
+        # Check if the character has already introduced themselves in the session
+        has_introduced = any(
+            m['message_type'] == 'character' and m['sender'] == char_name
+            for m in self.db.get_visible_messages_for_character(self.session_id, char_name)
+        )
+        self._introduction_given[char_name] = has_introduced
+
+        logger.debug(f"Introduction status for '{char_name}': {self._introduction_given[char_name]}")
+
     def remove_character(self, char_name: str):
         """
-        User can remove a previously added PC from the session. 
+        User can remove a previously added PC from the session.
         (Doesn't typically remove an NPC, but we won't forbid it.)
         """
         if char_name in self.characters:
             del self.characters[char_name]
         if char_name in self.msg_counter_since_forced_update:
             del self.msg_counter_since_forced_update[char_name]
+        if char_name in self._introduction_given:
+            del self._introduction_given[char_name]
         self.db.remove_character_from_session(self.session_id, char_name)
 
     def ensure_character_plan_exists(self, char_name: str):
@@ -301,12 +307,27 @@ class ChatManager:
         We'll rely on a round-robin index to pick who speaks next.
         """
         return self.db.get_session_characters(self.session_id)
-    
+
     def get_upcoming_speaker(self) -> Optional[str]:
         try:
             return self.get_participants_in_turn_order()[self.turn_index]
         except IndexError:
             return None
+
+    def initialize_introduction_status(self):
+        """
+        Initializes the introduction status for all characters currently in the session.
+        This is useful when loading an existing session to ensure accurate tracking.
+        """
+        session_chars = self.db.get_session_characters(self.session_id)
+        for char_name in session_chars:
+            if char_name in self.characters:
+                has_introduced = any(
+                    m['message_type'] == 'character' and m['sender'] == char_name
+                    for m in self.db.get_visible_messages_for_character(self.session_id, char_name)
+                )
+                self._introduction_given[char_name] = has_introduced
+                logger.debug(f"Initialized introduction status for '{char_name}': {has_introduced}")
 
     async def proceed_turn(self) -> Optional[str]:
         """
@@ -317,12 +338,8 @@ class ChatManager:
           4) Generate the chosen speaker’s message
         Returns the chosen speaker if one was found. Returns None if no participants.
         """
-        # 1) Possibly create a new NPC
-        if self.npc_manager:
-            all_msgs = self.db.get_messages(self.session_id)
-            recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
-            setting_desc = self.current_setting_description or ""
-            await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
+        # 1) Possibly create a new NPC - DEFERRED until after first normal interaction and all introductions given.
+        new_npc_name = None # Initialize to None, NPC creation check moved later
 
         # 2) Gather participants
         participants = self.get_participants_in_turn_order()
@@ -355,12 +372,34 @@ class ChatManager:
             break
 
         if not chosen_speaker:
-            # All NPCs refused, and no PCs exist or were found. 
+            # All NPCs refused, and no PCs exist or were found.
             # This means no one speaks this turn
             return None
 
         # 3) Generate the speaker's message
         await self.generate_character_message(chosen_speaker)
+
+        # 1) Possibly create a new NPC - NOW CHECKING AFTER FIRST NORMAL INTERACTION AND ALL INTRODUCTIONS
+        if not self._introduction_given.get(chosen_speaker, False):
+            # If this speaker just gave their introduction, mark as introduced
+            self._introduction_given[chosen_speaker] = True
+
+        all_introduced = True
+        current_participants = self.get_participants_in_turn_order()
+        for participant_name in current_participants:
+            if not self._introduction_given.get(participant_name, False):
+                all_introduced = False
+                break
+
+        if all_introduced:
+            all_msgs = self.db.get_messages(self.session_id)
+            recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
+            setting_desc = self.current_setting_description or ""
+            new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
+            if new_npc_name:
+                # If a new NPC was created, they should speak immediately.
+                return new_npc_name  # Immediately return the new speaker
+
         return chosen_speaker
 
     def get_visible_history_for_character(self, character_name: str) -> List[Dict]:
@@ -413,7 +452,7 @@ class ChatManager:
 
         participants = set(m["sender"] for m in all_msgs if m["message_type"] in ["user", "character"])
         for char_name in participants:
-            # We only summarize for those that appear in session_characters or if NPC 
+            # We only summarize for those that appear in session_characters or if NPC
             # (since now all are stored in session_characters anyway).
             if char_name not in self.db.get_session_characters(self.session_id):
                 continue
@@ -667,7 +706,7 @@ class ChatManager:
 
     def get_combined_location(self) -> str:
         """
-        Builds a combined location string for all session characters. 
+        Builds a combined location string for all session characters.
         Each active character's name + location + appearance is appended.
         """
         char_locs = self.db.get_all_character_locations(self.session_id)
@@ -712,8 +751,8 @@ class ChatManager:
     async def generate_character_message(self, character_name: str):
         """
         Generate the next message for the given character (NPC or PC).
-        Checks if they have introduced themselves; if not, do introduction. 
-        Otherwise do the normal turn. 
+        Checks if they have introduced themselves; if not, do introduction.
+        Otherwise do the normal turn.
         Then possibly updates location/appearance.
         """
         logger.info(f"Generating message for '{character_name}'.")
@@ -843,7 +882,7 @@ class ChatManager:
 
     async def generate_character_introduction_message(self, character_name: str):
         """
-        Called once the first time we see this character speak in the session 
+        Called once the first time we see this character speak in the session
         (PC or newly created NPC). Builds an introduction prompt and saves the result.
         """
         logger.info(f"Building introduction for character: {character_name}")
@@ -899,6 +938,8 @@ class ChatManager:
                     await self.llm_status_callback(
                         f"Introduction completed for {character_name}."
                     )
+                # Mark introduction as given after successful introduction message
+                self._introduction_given[character_name] = True
             else:
                 logger.warning(f"Invalid or empty introduction for {character_name}. {introduction_response}")
                 if self.llm_status_callback:
@@ -1056,7 +1097,7 @@ class ChatManager:
         interaction: Interaction
     ) -> Optional[Interaction]:
         """
-        Checks the new output for placeholders or near-dup repetition. If it fails, we 
+        Checks the new output for placeholders or near-dup repetition. If it fails, we
         attempt up to max_similarity_retries times to regenerate a better output.
         """
         all_visible = self.db.get_visible_messages_for_character(self.session_id, character_name)
@@ -1167,11 +1208,7 @@ class ChatManager:
         """
         We say a character 'introduced themselves' if they've spoken at least once with message_type='character'.
         """
-        all_msgs = self.db.get_messages(self.session_id)
-        for m in all_msgs:
-            if m["sender"] == candidate_char_name and m["message_type"] == "character":
-                return True
-        return False
+        return self._introduction_given.get(candidate_char_name, False)
 
     async def evaluate_location_update(self, character_name: str, visited: Optional[Set[str]] = None):
         if visited is None:
@@ -1418,7 +1455,7 @@ class ChatManager:
 
     async def update_all_characters_location_and_appearance_from_scratch(self):
         """
-        If the user chooses to re-derive location & appearance for all session characters 
+        If the user chooses to re-derive location & appearance for all session characters
         ignoring old data, we use the from-scratch prompts for each character.
         """
         session_chars = self.db.get_session_characters(self.session_id)

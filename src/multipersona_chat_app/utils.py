@@ -29,6 +29,16 @@ def load_settings() -> List[Dict]:
         logger.error(f"Error loading settings: {e}")
         return []
 
+def get_moral_guidelines() -> str:
+        moral_guidelines_path = os.path.join("src", "multipersona_chat_app", "config", "moral_guidelines.yaml")
+        try:
+            with open(moral_guidelines_path, 'r') as f:
+                mg_data = yaml.safe_load(f)
+                return mg_data.get('moral_guidelines', '')
+        except Exception as e:
+            logger.error(f"Error loading moral guidelines: {e}")
+            return ""
+
 def get_available_characters(directory: str) -> Dict[str, Character]:
     """
     Load all characters from the given directory. Each character is defined in a YAML file.

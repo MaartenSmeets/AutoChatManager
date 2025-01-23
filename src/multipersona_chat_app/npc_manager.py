@@ -7,12 +7,15 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from db.db_manager import DBManager
+import utils
 from llm.ollama_client import OllamaClient
 from models.character import Character
 from models.character_metadata import CharacterMetadata
 from npc_prompts import (
     NPC_CREATION_SYSTEM_PROMPT,
-    NPC_CREATION_USER_PROMPT
+    NPC_CREATION_USER_PROMPT,
+    NPC_SYSTEM_PROMPT_TEMPLATE,
+    NPC_DYNAMIC_PROMPT_TEMPLATE
 )
 
 logger = logging.getLogger(__name__)
@@ -113,10 +116,26 @@ class NPCManager:
         npc_meta = CharacterMetadata(is_npc=True, role=result.npc_role.strip())
         self.db.save_character_metadata(self.session_id, new_npc_name, npc_meta)
 
+        """
+        Generates system and dynamic prompts for a new NPC and saves them to the database.
+        """
+        system_prompt = NPC_SYSTEM_PROMPT_TEMPLATE.replace("{npc_name}", new_npc_name) \
+        .replace("{npc_role}", npc_meta.role) \
+        .replace("{npc_appearance}", result.npc_appearance.strip()) \
+        .replace("{npc_location}", result.npc_location.strip()) \
+        .replace("{npc_goal}", "To fulfill their role as a " + result.npc_role.strip())
+
+        dynamic_prompt_template = NPC_DYNAMIC_PROMPT_TEMPLATE.replace('{character_name}',new_npc_name)
+
+        self.db.save_character_prompts(
+                self.session_id,
+                new_npc_name,
+                system_prompt,
+                dynamic_prompt_template
+            )
+
         logger.info(f"New NPC '{new_npc_name}' created with role '{npc_meta.role}'.")
         return new_npc_name
-
-
 
     async def is_same_location_llm(self, loc1: str, loc2: str, setting_desc: str) -> bool:
         system_prompt = (

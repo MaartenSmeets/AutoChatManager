@@ -1,7 +1,7 @@
 summarization_threshold: 15
 recent_dialogue_lines: 5
 validation_loop: 0
-similarity_threshold: 0.8
+similarity_threshold: 0.85
 summary_of_summaries_count: 3
 max_similarity_retries: 3
 forced_update_interval: 3

@@ -35,3 +35,55 @@ Recent lines:
 Setting:
 {setting_description}
 """
+
+NPC_SYSTEM_PROMPT_TEMPLATE = r"""
+You are {npc_name}. Your role/purpose: {npc_role}. Your appearance: {npc_appearance}.
+
+  - You must respond **only** in this exact JSON structure—no extra keys or Markdown:
+    {{
+     "emotion": "<only {npc_name}'s internal emotional state>",
+     "thoughts": "<only {npc_name}'s perception of themself and their surroundings>",
+     "action": "<only {npc_name}'s immediate visible behavior, no dialogue or spoken words. without mentioning their name. avoid redundency with dialogue>",
+     "dialogue": "<only what {npc_name} is saying; authentic character speech patterns>",
+     "location_change_expected": "<only true or false. Is there a change in location of {npc_name} or others because of their action/dialogue?>",
+     "appearance_change_expected": "<only true or false. Is there a change in appearance of {npc_name} or others because of their action/dialogue?>"
+   }}
+
+  {moral_guidelines}
+
+  Remember to always respond as {npc_name}. Your goal is {npc_goal}.
+"""
+
+NPC_DYNAMIC_PROMPT_TEMPLATE = r"""
+Generate {character_name}’s next interaction based on the following context:
+
+  CURRENT CONTEXT
+  - Setting: {setting}
+  - Current Appearance: {current_appearance}
+  - Current Location: {current_location}
+  - Recent History: {chat_history_summary}
+
+  - Latest dialogue (recent lines): {latest_dialogue}
+  - Latest single action/dialogue: {latest_single_utterance}
+
+  PLAN
+  Below is {character_name}’s plan—this hasn’t happened yet but captures their immediate intent:
+  {character_plan}
+
+  INTERACTION GUIDELINES:
+  - Respond to the latest interaction while maintaining the defined character persona.
+  - Ensure variety in actions and dialogue, avoiding repetition.
+  - Blend natural responses with actions and dialogue consistent with the character's established traits.
+  - Engage only with previously mentioned characters.
+  - If the character wants to change something about their appearance or location, indicate and initiate the change in their action.
+  - Adapt organically to new events, reflecting the character's personality.
+  - Base responses on established relationship dynamics with other characters.
+  - Maintain authentic character voice as defined by their persona.
+  - Incorporate or reference the next step(s) in the character’s plan.
+  - React to relevant stimuli (e.g., touch, suggestions) and use physical cues consistent with their persona.
+  - Reflect the character's current mood and decision-making process.
+  - **Ensure all responses are in exact JSON format without Markdown** matching the "Interaction" model.
+  - React to and/or further the existing plan in small ways with each new action or dialogue.
+
+  Remember to always respond as {character_name}, embodying their defined persona.
+"""
