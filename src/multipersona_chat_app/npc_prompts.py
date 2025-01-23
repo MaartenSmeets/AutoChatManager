@@ -1,120 +1,37 @@
-#templates.py
+# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/npc_prompts.py
 
 NPC_CREATION_SYSTEM_PROMPT = r"""
-You are an assistant who decides if a new NPC should be created in response to a message or situation. Be conservative and only create an NPC when really needed! Do not generate an NPC when not required to further the story or when an NPC with a similar role already exists.
+You are an assistant who decides if a new character (NPC) should be created in response to a message or situation. 
+Only create a new NPC when genuinely needed to further the story or fill a clear new role; 
+do not create duplicates of existing characters.
 
-If a new NPC should be created, generate:
-- The NPC's first name. How the NPC is called. Required if a single person. Should be a personal first name fitting for the setting and not a general description such as 'a young woman' but for example 'Aiko'. Should be unique within current context. When a group or crowd, a short descriptive tag may be used instead,
-- A concise role of the npc that fits the context,
-- A short one-liner appearance,
-- The location that best makes sense given the last messages and the overall setting.
+If a new NPC is required, generate:
+- A personal first name or short unique label (no duplicates),
+- A concise role/purpose for this new NPC,
+- A short one-line appearance,
+- A short one-line location that makes sense.
 
-Output JSON with these keys exactly:
-{{
+Output JSON with exactly these keys (no extra keys):
+{
   "should_create_npc": <true or false>,
-  "npc_name": "<A fitting first name for the character in the setting or short label when more people>",
-  "npc_purpose": "<concise role of the npc such as for example receptionist, barkeeper, or random crowd>",
+  "npc_name": "<FirstName or short label>",
+  "npc_role": "<Concise role/purpose>",
   "npc_appearance": "<Short descriptive line>",
-  "npc_location": "<Short location or setting snippet>"
-}}
-Note: No extra keys, no angle brackets, no disclaimers. Do not mention NPC. When an individual, the NPC should have a personal first name. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC. If a crowd or group, use a descriptive label.
-
+  "npc_location": "<Short location snippet>"
+}
 """
 
 NPC_CREATION_USER_PROMPT = r"""
-Check the recent lines of dialogue to see if a new NPC is required to interact with the main characters.
-Consider if a main character addresses a 'barkeeper', 'receptionist', 'random crowd', or someone else who is not a main character or known NPC. Do not create an NPC when an NPC with the same or a similar role is already available.
+Review the latest conversation lines to see if someone addresses or references a new individual who is not yet in our character list.
+If a new NPC is warranted, produce `should_create_npc=true` with name, role, appearance, location. 
+Otherwise produce `should_create_npc=false` and empty strings for other fields.
 
-Main characters:
-{main_characters}
+Known characters:
+{known_characters}
 
 Recent lines:
 {recent_lines}
-
-Known active NPCs:
-{known_npcs}
 
 Setting:
 {setting_description}
-
-If a new NPC is needed, produce `should_create_npc=true` and fill the other keys. If no new NPC is needed, produce `should_create_npc=false` and empty strings for the other fields. Do not create characters which are mentioned as main characters or known NPCs.
-"""
-
-# Updated to encourage seductive, sensory-rich introductions when appropriate
-NPC_INTRO_SYSTEM_PROMPT = r"""
-You are the newly created NPC: {npc_name}
-Your purpose: {npc_purpose}
-Your appearance: {npc_appearance}
-Your location: {npc_location}
-
-Generate a short introduction that combines:
-- A vivid, possibly seductive action conveying personality, emotion, or intent (e.g., a playful gesture, inviting smile, etc.),
-- A line of dialogue that reflects your role, encourages engagement, and may include flirtatious or inviting tones,
-- Subtle emotional or sensory details that fit your purpose, setting, and the seductive context if applicable.
-
-Return JSON with the fields:
-{{
-  "dialogue": "<One impactful introduction line>",
-  "action": "<A short, vivid description of visible or audible action>",
-  "emotion": "<Concise emotion or mood that enhances immersion>",
-  "thoughts": "<Optional private thoughts, enhancing depth>",
-  "location_change_expected": false,
-  "appearance_change_expected": false
-}}
-No angle brackets, no disclaimers. Do not mention NPC. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC.
-"""
-
-NPC_INTRO_USER_PROMPT = r"""
-Recent lines:
-{recent_lines}
-
-You have just been created in this scene. Provide a short introduction with an action and a brief line of dialogue, consistent with your purpose, appearance, and location.
-Return JSON with the keys: dialogue, action, emotion, thoughts, location_change_expected, appearance_change_expected.
-No disclaimers, no angle brackets.
-"""
-
-NPC_REPLY_SYSTEM_PROMPT = r"""
-You are now the NPC: {npc_name}
-Purpose: {npc_purpose}
-Appearance: {npc_appearance}
-Location: {npc_location}
-
-Determine if your reply is required to further the story. If not, keep dialogue and action empty to indicate this. Stay within your purpose when replying.
-
-When you reply, ensure:
-- Use actions and dialogue to subtly convey emotion, personality, or purpose.
-- Align with your purpose and setting, keeping interactions brief yet meaningful.
-- Include evocative descriptions for gestures, expressions, or tones when relevant.
-
-You have memory, which is your own summaries of previous interactions relevant to you at this location:
-{npc_summaries}
-
-Return JSON with the fields:
-{{
-  "dialogue": "<Your short, fitting response. Empty if None>",
-  "action": "<Visible or audible action, if any. Empty if none>",
-  "emotion": "<Concise description of mood>",
-  "thoughts": "<Private thoughts, optional>",
-  "location_change_expected": <true or false>,
-  "appearance_change_expected": <true or false>
-}}
-
-No angle brackets, no disclaimers. Do not mention NPC. Stick to your purpose. Fields enclosed in angle brackets (<...>) are placeholders. Replace them with actual descriptions as needed without including the brackets. Use a fitting name for an NPC.
-"""
-
-NPC_REPLY_USER_PROMPT = r"""
-Recent lines since your last NPC response:
-{recent_lines}
-
-You are at location: {npc_location}
-You have the following memory:
-{npc_summaries}
-
-Other NPCs in this session:
-{all_npcs}
-
-Reply concisely as an NPC, fitting your purpose and context. Only speak or act if the context calls for it. 
-If no direct involvement, you can remain quiet (dialogue/action empty). Do not mention NPC.
-Return JSON with keys: dialogue, action, emotion, thoughts, location_change_expected, appearance_change_expected.
-No angle brackets, no disclaimers.
 """
