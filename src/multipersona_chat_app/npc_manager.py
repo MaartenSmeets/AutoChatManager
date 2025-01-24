@@ -54,7 +54,16 @@ class NPCManager:
         """
 
         known_chars = self.db.get_character_names(self.session_id)
-        known_str = ", ".join(known_chars) if known_chars else "(none)"
+        npc_characters = []
+        for char_name in known_chars:
+            meta = self.db.get_character_metadata(self.session_id, char_name)
+            if meta and meta.is_npc:
+                role = meta.role.strip() if meta.role else "(No Role)"
+                npc_characters.append(f"{char_name} ({role})")
+            else:
+                npc_characters.append(char_name)
+
+        known_str = ", ".join(npc_characters) if npc_characters else "(none)"
         lines_for_prompt = "\n".join(recent_lines)
 
         user_prompt = NPC_CREATION_USER_PROMPT.format(
@@ -189,6 +198,7 @@ class NPCManager:
         for other_name in others:
             other_loc = self.db.get_character_location(self.session_id, other_name) or ""
             # We do a naive check: if the loc strings are identical, or do something more advanced
-            if self.is_same_location_llm(npc_loc.strip().lower(), other_loc.strip().lower(), setting_desc):
+            is_same_loc = await self.is_same_location_llm(npc_loc.strip().lower(), other_loc.strip().lower(), setting_desc)
+            if is_same_loc:
                 return True
         return False

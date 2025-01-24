@@ -128,6 +128,8 @@ class ChatManager:
         self.llm_status_callback = None
         # Track introduction status locally
         self._introduction_given: Dict[str, bool] = {}
+        self.introduction_counter = 0
+        self.introduction_sequence = {}
         self.initialize_introduction_status()
 
     @staticmethod
@@ -212,6 +214,7 @@ class ChatManager:
             initial_location=current_session_loc,
             initial_appearance=char_instance.appearance
         )
+
         # Mark as a non-NPC in character_metadata
         meta = CharacterMetadata(is_npc=False, role="")
         self.db.save_character_metadata(self.session_id, char_name, meta)
@@ -236,6 +239,11 @@ class ChatManager:
             for m in self.db.get_visible_messages_for_character(self.session_id, char_name)
         )
         self._introduction_given[char_name] = has_introduced
+
+        # NEW: If this is the first time we see this char, record their introduction sequence.
+        if char_name not in self.introduction_sequence:
+            self.introduction_counter += 1
+            self.introduction_sequence[char_name] = self.introduction_counter
 
         logger.debug(f"Introduction status for '{char_name}': {self._introduction_given[char_name]}")
 
@@ -303,10 +311,21 @@ class ChatManager:
 
     def get_participants_in_turn_order(self) -> List[str]:
         """
-        Returns *all* session characters (both PCs and NPCs).
-        We'll rely on a round-robin index to pick who speaks next.
+        Returns *all* session characters (both PCs and NPCs) but sorted by their
+        introduction sequence, ensuring newly joined characters (NPCs included)
+        appear after earlier ones in turn order.
         """
-        return self.db.get_session_characters(self.session_id)
+        chars = self.db.get_session_characters(self.session_id)
+        
+        # Ensure everyone in session_characters is accounted for in introduction_sequence
+        for c in chars:
+            if c not in self.introduction_sequence:
+                self.introduction_counter += 1
+                self.introduction_sequence[c] = self.introduction_counter
+        
+        # Sort by ascending introduction index
+        sorted_chars = sorted(chars, key=lambda c: self.introduction_sequence[c])
+        return sorted_chars
 
     def get_upcoming_speaker(self) -> Optional[str]:
         try:
@@ -332,73 +351,84 @@ class ChatManager:
     async def proceed_turn(self) -> Optional[str]:
         """
         Advance the conversation turn:
-          1) Let the npc_manager see if a new NPC should be created
-          2) Round-robin pick the next character
-          3) If that character is an NPC, call npc_should_speak(); if it returns False, skip them
-          4) Generate the chosen speaker’s message
-        Returns the chosen speaker if one was found. Returns None if no participants.
+          1) Gather all session participants in a round-robin list, sorted by introduction sequence.
+          2) Attempt to pick the next character in order. If it's an NPC, we call npc_should_speak() 
+             and may skip them if they have no reason to speak this turn.
+          3) Once the speaker is chosen, generate their message.
+          4) Then check if all participants are introduced; if yes, maybe create a new NPC. 
+             (If a new NPC is created, we now give it an immediate turn.)
+        Returns the chosen speaker if one was found, or None if no participants.
         """
-        # 1) Possibly create a new NPC - DEFERRED until after first normal interaction and all introductions given.
-        new_npc_name = None # Initialize to None, NPC creation check moved later
 
-        # 2) Gather participants
         participants = self.get_participants_in_turn_order()
         if not participants:
-            logger.warning("No participants in the session yet (PC or NPC). Turn does nothing.")
+            logger.warning("No participants in session; proceed_turn does nothing.")
             return None
 
-        # Safely initialize our round-robin index
+        # Make sure we have a current_index that won't exceed participants length
         if not hasattr(self, 'current_index'):
             self.current_index = 0
 
-        # We'll attempt up to len(participants) times to find someone who can speak
-        count_attempts = 0
+        logger.debug(f"[proceed_turn] Participants in round-robin order: {participants}")
+        logger.debug(f"[proceed_turn] Current round-robin index before picking = {self.current_index}")
+
         chosen_speaker = None
+        count_attempts = 0
         while count_attempts < len(participants):
             c_name = participants[self.current_index]
-            self.current_index = (self.current_index + 1) % len(participants)
-            count_attempts += 1
-
-            # Check if they're an NPC and if so whether they should speak
+            logger.debug(f"[proceed_turn] Attempting speaker: {c_name}")
+            
             meta = self.db.get_character_metadata(self.session_id, c_name)
             if meta and meta.is_npc:
+                # For NPCs: see if they actually "should speak" (location-based, or other logic).
                 npc_should_speak = await self.npc_manager.npc_should_speak(c_name, self.current_setting_description or "")
+                logger.debug(f"[proceed_turn] NPC '{c_name}' npc_should_speak()={npc_should_speak}")
                 if not npc_should_speak:
-                    logger.debug(f"Skipping turn for NPC '{c_name}' because npc_should_speak=False.")
+                    logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_should_speak=False.")
+                    self.current_index = (self.current_index + 1) % len(participants)
+                    count_attempts += 1
                     continue
 
-            # Found a speaker who will talk
+            # If we get here, we've found a speaker who is either a PC or an NPC that should speak
             chosen_speaker = c_name
+            self.current_index = (self.current_index + 1) % len(participants)
             break
-
+        
         if not chosen_speaker:
-            # All NPCs refused, and no PCs exist or were found.
-            # This means no one speaks this turn
+            logger.debug("[proceed_turn] No speaker found (all NPCs refused, or no participants).")
             return None
-
-        # 3) Generate the speaker's message
+        
+        logger.info(f"[proceed_turn] Chosen speaker: {chosen_speaker}")
         await self.generate_character_message(chosen_speaker)
 
-        # 1) Possibly create a new NPC - NOW CHECKING AFTER FIRST NORMAL INTERACTION AND ALL INTRODUCTIONS
+        # Mark introduction as complete if this was their first time
         if not self._introduction_given.get(chosen_speaker, False):
-            # If this speaker just gave their introduction, mark as introduced
             self._introduction_given[chosen_speaker] = True
 
+        # Check if all participants are introduced
         all_introduced = True
-        current_participants = self.get_participants_in_turn_order()
-        for participant_name in current_participants:
+        for participant_name in participants:
             if not self._introduction_given.get(participant_name, False):
                 all_introduced = False
                 break
 
+        # Possibly create a new NPC only after everyone has introduced themselves
         if all_introduced:
             all_msgs = self.db.get_messages(self.session_id)
             recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
             setting_desc = self.current_setting_description or ""
             new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
+            
+            # NEW: If a new NPC was just created, let them speak immediately.
             if new_npc_name:
-                # If a new NPC was created, they should speak immediately.
-                return new_npc_name  # Immediately return the new speaker
+                logger.info(f"[proceed_turn] A new NPC '{new_npc_name}' was created. They speak immediately!")
+                
+                # Register them in the introduction sequence (so they appear in correct order next time)
+                self.introduction_counter += 1
+                self.introduction_sequence[new_npc_name] = self.introduction_counter
+
+                # Force an immediate turn for this brand-new NPC
+                await self.generate_character_message(new_npc_name)
 
         return chosen_speaker
 
@@ -751,29 +781,32 @@ class ChatManager:
     async def generate_character_message(self, character_name: str):
         """
         Generate the next message for the given character (NPC or PC).
-        Checks if they have introduced themselves; if not, do introduction.
-        Otherwise do the normal turn.
-        Then possibly updates location/appearance.
+        1) If it's their first time, we do an introduction.
+        2) Otherwise, build normal prompts and get the LLM output (action+dialogue).
+        3) If both action and dialogue come back empty or None, we log it (and in a future iteration, 
+           we could try regenerating).
+        4) After the normal message, we handle forced location/appearance updates if none were triggered 
+           by the user text. These updates should be in *addition* to the character’s normal message, 
+           never replacing it.
         """
-        logger.info(f"Generating message for '{character_name}'.")
+
+        logger.info(f"[generate_character_message] Generating message for '{character_name}'")
+
+        # Always ensure we have/refresh the plan
         all_msgs = self.db.get_messages(self.session_id)
         triggered_message_id = all_msgs[-1]['id'] if all_msgs else None
-
-        # For any character (PC or NPC), first ensure we have a plan
         await self.update_character_plan(character_name, triggered_message_id)
 
-        # Has this character spoken before?
+        # Handle introduction if first time
         if not self.character_has_introduced(character_name):
-            # First-time introduction
+            logger.debug(f"[generate_character_message] '{character_name}' has not introduced themselves yet.")
             await self.generate_character_introduction_message(character_name)
             return
 
         # Normal turn
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(
-                    f"Generating next interaction for {character_name}."
-                )
+                await self.llm_status_callback(f"Generating next interaction for {character_name}.")
 
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
 
@@ -781,49 +814,55 @@ class ChatManager:
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
 
-            # Generate the raw Interaction from LLM
             interaction = await asyncio.to_thread(
                 llm.generate,
                 prompt=formatted_prompt,
                 system=system_prompt,
                 use_cache=False
             )
+            
+            logger.debug(f"[generate_character_message] Raw LLM output for '{character_name}': {interaction}")
 
             if not interaction:
-                logger.warning(f"No response for {character_name}. Not storing.")
+                logger.warning(f"[generate_character_message] No response from LLM for {character_name}.")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(
-                        f"No interaction generated for {character_name}."
-                    )
+                    await self.llm_status_callback(f"No interaction generated for {character_name}.")
                 return
 
             if not isinstance(interaction, Interaction):
-                logger.error(f"Malformed output type from LLM for '{character_name}': {interaction}")
+                logger.error(f"[generate_character_message] Malformed LLM output (not Interaction) for '{character_name}': {interaction}")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(
-                        f"Invalid or malformed LLM output for {character_name}."
-                    )
+                    await self.llm_status_callback(f"Invalid LLM output for {character_name}.")
                 return
 
-            # Clean text
+            # Clean the fields
             interaction.action = utils.remove_markdown(interaction.action)
             interaction.dialogue = utils.remove_markdown(interaction.dialogue)
             interaction.emotion = utils.remove_markdown(interaction.emotion)
             interaction.thoughts = utils.remove_markdown(interaction.thoughts)
 
-            # Possibly check for repetition
+            # Check for repetition or placeholders
             final_interaction = await self.check_and_regenerate_if_repetitive(
                 character_name, system_prompt, formatted_prompt, interaction
             )
             if not final_interaction:
-                logger.warning(f"All regeneration attempts failed for {character_name}. Using original output.")
+                logger.warning(f"[generate_character_message] All regeneration attempts failed for {character_name}. Using original output.")
                 final_interaction = interaction
 
+            # Ensure final fields are stripped/cleaned
             final_interaction.action = utils.remove_markdown(final_interaction.action)
             final_interaction.dialogue = utils.remove_markdown(final_interaction.dialogue)
             final_interaction.emotion = utils.remove_markdown(final_interaction.emotion)
             final_interaction.thoughts = utils.remove_markdown(final_interaction.thoughts)
 
+            # If everything came back as empty, log it (and in a next iteration you might re-try automatically)
+            if (not final_interaction.action.strip()) and (not final_interaction.dialogue.strip()):
+                logger.warning(
+                    f"[generate_character_message] '{character_name}' returned empty action AND dialogue. "
+                    "This may need a manual or automatic retry in a future iteration."
+                )
+
+            # Combine action + dialogue into one visible message
             if final_interaction.action.strip() and final_interaction.dialogue.strip():
                 formatted_message = f"*{final_interaction.action}*\n{final_interaction.dialogue}"
             elif final_interaction.action.strip():
@@ -831,7 +870,7 @@ class ChatManager:
             elif final_interaction.dialogue.strip():
                 formatted_message = final_interaction.dialogue
             else:
-                formatted_message = ""
+                formatted_message = "None"  # If truly empty, store "None" so we see it in logs/UI
 
             msg_id = await self.add_message(
                 character_name,
@@ -842,9 +881,12 @@ class ChatManager:
                 thoughts=final_interaction.thoughts
             )
 
+            logger.info(f"[generate_character_message] Stored message for '{character_name}': {formatted_message}")
+
             location_was_triggered = False
             appearance_was_triggered = False
 
+            # If the LLM signaled location/appearance changes, do them
             if final_interaction.location_change_expected:
                 logger.debug(f"{character_name} indicated location change. Evaluate next.")
                 await self.evaluate_location_update(character_name)
@@ -855,19 +897,21 @@ class ChatManager:
                 await self.evaluate_appearance_update(character_name)
                 appearance_was_triggered = True
 
+            # If *none* were explicitly triggered, possibly do forced location/appearance after every N messages
             if not location_was_triggered and not appearance_was_triggered:
-                # Possibly do forced location/appearance update after N messages.
                 self.msg_counter_since_forced_update[character_name] = \
                     self.msg_counter_since_forced_update.get(character_name, 0) + 1
+
                 if self.msg_counter_since_forced_update[character_name] >= self.forced_update_interval:
                     logger.info(
-                        f"Forced location & appearance update for {character_name} "
-                        f"since interval={self.forced_update_interval} was reached."
+                        f"[generate_character_message] Forced location & appearance update for '{character_name}' "
+                        f"since {self.forced_update_interval} messages have passed without an update."
                     )
                     await self.evaluate_location_update(character_name)
                     await self.evaluate_appearance_update(character_name)
                     self.msg_counter_since_forced_update[character_name] = 0
             else:
+                # Reset the forced counter if the LLM already triggered an update
                 self.msg_counter_since_forced_update[character_name] = 0
 
             if self.llm_status_callback:
