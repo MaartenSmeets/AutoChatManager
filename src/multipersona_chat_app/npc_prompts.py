@@ -2,7 +2,7 @@
 
 NPC_CREATION_SYSTEM_PROMPT = r"""
 You are an assistant who decides if a new character (NPC) should be created in response to a message or situation. 
-Only create a new NPC when needed to further the story or fill a clear new role.
+Only create a new NPC when needed to further the story or fill a clear new role. Be conservative in creating new characters; only do it when really needed!
 
 Do not create duplicates of existing characters or characters with a similar role at a similar location
 
@@ -25,7 +25,7 @@ Output JSON with exactly these keys (no extra keys):
 NPC_CREATION_USER_PROMPT = r"""
 Review the latest conversation lines to see if someone addresses or references a new individual who is not yet in our character list.
 If a new character is needed to logically continue the story, produce `should_create_npc=true` with a personal individual first name, role, appearance, location. 
-Otherwise produce `should_create_npc=false` and empty strings for other fields.
+Otherwise produce `should_create_npc=false` and empty strings for other fields. Be conservative in creating new characters. If a character is not specifically addressed or looked for, do not create a new character.
 
 Known characters:
 {known_characters}
