@@ -2,19 +2,24 @@
 
 NPC_CREATION_SYSTEM_PROMPT = r"""
 You are an assistant who decides if a new character (NPC) should be created in response to a message or situation. 
-Only create a new NPC when needed to further the story or fill a clear new role; 
-do not create duplicates of existing characters.
+Only create a new NPC when needed to further the story or fill a clear new role. 
+
+For example
+- When someone approaches a counter, a person should be behind it
+- When someone is looking for someone specific, that specific person should be there
+
+Do not create duplicates of existing characters or characters with a similar role at a similar location
 
 If a new NPC is required, generate:
-- A personal first name or short unique label (no duplicates),
-- A concise role/purpose for this new NPC,
+- A personal first name (no duplicates) of the individual to be created,
+- A concise role/purpose for this individual,
 - A short one-line appearance,
 - A short one-line location that makes sense.
 
 Output JSON with exactly these keys (no extra keys):
 {{
   "should_create_npc": <true or false>,
-  "npc_name": "<First name of the character>",
+  "npc_name": "<First name of the character to be created>",
   "npc_role": "<Concise role/purpose>",
   "npc_appearance": "<Short descriptive line>",
   "npc_location": "<Short location snippet>"
@@ -23,7 +28,7 @@ Output JSON with exactly these keys (no extra keys):
 
 NPC_CREATION_USER_PROMPT = r"""
 Review the latest conversation lines to see if someone addresses or references a new individual who is not yet in our character list.
-If a new character is warranted, produce `should_create_npc=true` with name, role, appearance, location. 
+If a new character is addressed or looked for, produce `should_create_npc=true` with a personal individual first name, role, appearance, location. 
 Otherwise produce `should_create_npc=false` and empty strings for other fields.
 
 Known characters:

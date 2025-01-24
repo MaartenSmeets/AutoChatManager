@@ -351,13 +351,12 @@ class ChatManager:
     async def proceed_turn(self) -> Optional[str]:
         """
         Advance the conversation turn:
-          1) Gather all session participants in a round-robin list, sorted by introduction sequence.
-          2) Attempt to pick the next character in order. If it's an NPC, we call npc_should_speak() 
-             and may skip them if they have no reason to speak this turn.
-          3) Once the speaker is chosen, generate their message.
-          4) Then check if all participants are introduced; if yes, maybe create a new NPC. 
-             (If a new NPC is created, we now give it an immediate turn.)
-        Returns the chosen speaker if one was found, or None if no participants.
+        1) Round-robin to choose the next speaker.
+        2) NPC checks whether it "should speak" (skip if not).
+        3) Generate a message for that speaker.
+        4) If the speaker was just introduced, end the turn right away (no second message).
+        5) Otherwise check if all participants are introduced; if yes, maybe create a new NPC and let them speak.
+        Returns the chosen speaker, or None if no participants.
         """
 
         participants = self.get_participants_in_turn_order()
@@ -365,7 +364,6 @@ class ChatManager:
             logger.warning("No participants in session; proceed_turn does nothing.")
             return None
 
-        # Make sure we have a current_index that won't exceed participants length
         if not hasattr(self, 'current_index'):
             self.current_index = 0
 
@@ -377,11 +375,12 @@ class ChatManager:
         while count_attempts < len(participants):
             c_name = participants[self.current_index]
             logger.debug(f"[proceed_turn] Attempting speaker: {c_name}")
-            
+
             meta = self.db.get_character_metadata(self.session_id, c_name)
             if meta and meta.is_npc:
-                # For NPCs: see if they actually "should speak" (location-based, or other logic).
-                npc_should_speak = await self.npc_manager.npc_should_speak(c_name, self.current_setting_description or "")
+                npc_should_speak = await self.npc_manager.npc_should_speak(
+                    c_name, self.current_setting_description or ""
+                )
                 logger.debug(f"[proceed_turn] NPC '{c_name}' npc_should_speak()={npc_should_speak}")
                 if not npc_should_speak:
                     logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_should_speak=False.")
@@ -389,21 +388,26 @@ class ChatManager:
                     count_attempts += 1
                     continue
 
-            # If we get here, we've found a speaker who is either a PC or an NPC that should speak
+            # We found our speaker
             chosen_speaker = c_name
             self.current_index = (self.current_index + 1) % len(participants)
             break
-        
+
         if not chosen_speaker:
             logger.debug("[proceed_turn] No speaker found (all NPCs refused, or no participants).")
             return None
-        
+
         logger.info(f"[proceed_turn] Chosen speaker: {chosen_speaker}")
+
+        # -- NEW: Track if they were not introduced before this message --
+        was_introduced_before = self._introduction_given.get(chosen_speaker, False)
+
         await self.generate_character_message(chosen_speaker)
 
-        # Mark introduction as complete if this was their first time
-        if not self._introduction_given.get(chosen_speaker, False):
-            self._introduction_given[chosen_speaker] = True
+        # -- NEW: If this speaker just did their introduction, end the turn now.
+        if not was_introduced_before and self._introduction_given.get(chosen_speaker, False):
+            logger.debug(f"[proceed_turn] {chosen_speaker} just introduced themselves. Ending turn immediately.")
+            return chosen_speaker
 
         # Check if all participants are introduced
         all_introduced = True
@@ -412,22 +416,18 @@ class ChatManager:
                 all_introduced = False
                 break
 
-        # Possibly create a new NPC only after everyone has introduced themselves
+        # Possibly create a new NPC only after everyone has introduced
         if all_introduced:
             all_msgs = self.db.get_messages(self.session_id)
             recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
             setting_desc = self.current_setting_description or ""
             new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
-            
-            # NEW: If a new NPC was just created, let them speak immediately.
             if new_npc_name:
                 logger.info(f"[proceed_turn] A new NPC '{new_npc_name}' was created. They speak immediately!")
-                
-                # Register them in the introduction sequence (so they appear in correct order next time)
+                # Register new NPC in introduction sequence
                 self.introduction_counter += 1
                 self.introduction_sequence[new_npc_name] = self.introduction_counter
-
-                # Force an immediate turn for this brand-new NPC
+                # Immediate turn for the brand-new NPC (introduction only)
                 await self.generate_character_message(new_npc_name)
 
         return chosen_speaker
@@ -497,13 +497,18 @@ class ChatManager:
 
         if self.llm_status_callback:
             await self.llm_status_callback(
-                f"Summarizing history for {character_name} because their visible messages exceeded the threshold."
+                f"[LLM] Summarizing history for {character_name} because their visible messages exceeded the threshold."
             )
 
         while True:
             msgs = self.db.get_visible_messages_for_character(self.session_id, character_name)
             if len(msgs) < self.summarization_threshold:
                 break
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Summarizing a chunk of {len(msgs[: self.to_summarize_count])} messages for {character_name}."
+                )
 
             msgs.sort(key=lambda x: x['id'])
             chunk = msgs[: self.to_summarize_count]
@@ -573,7 +578,7 @@ class ChatManager:
         await self.combine_summaries_if_needed(character_name)
 
         if self.llm_status_callback:
-            await self.llm_status_callback(f"Finished summarizing history for {character_name}.")
+            await self.llm_status_callback(f"[LLM] Finished summarizing history for {character_name}.")
 
     async def combine_summaries_if_needed(self, character_name: str):
         summarize_llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml')
@@ -590,17 +595,17 @@ class ChatManager:
             chunk_summaries = [r["summary"] for r in chunk]
             covered_up_to = max(r["covered_up_to_message_id"] for r in chunk)
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Combining older summaries for {character_name} into one consolidated summary."
+                )
+
             prompt = COMBINE_SUMMARIES_PROMPT.format(
                 character_name=character_name,
                 count_summaries=len(chunk_summaries),
                 chunk_text="\n\n".join(chunk_summaries),
                 moral_guidelines=self.moral_guidelines
             )
-
-            if self.llm_status_callback:
-                await self.llm_status_callback(
-                    f"Combining older summaries for {character_name} into a single consolidated summary."
-                )
 
             combined_summary = await asyncio.to_thread(summarize_llm.generate, prompt=prompt, use_cache=False)
             if not combined_summary:
@@ -615,7 +620,7 @@ class ChatManager:
             )
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Done combining summaries for {character_name}.")
+                await self.llm_status_callback(f"[LLM] Done combining summaries for {character_name}.")
 
     def get_latest_dialogue(self, character_name: str) -> str:
         visible_history = self.get_visible_history_for_character(character_name)
@@ -718,20 +723,53 @@ class ChatManager:
             )
             return system_prompt, user_prompt
         else:
-            # If it's an NPC created at runtime, we do not have original YAML, so keep it simple
             prompts = self.db.get_character_prompts(self.session_id, character_name)
             if not prompts:
                 raise ValueError(f"No introduction or dynamic prompts found for NPC '{character_name}'.")
 
+            # Retrieve NPC metadata or fall back to empty strings
+            npc_metadata = self.db.get_character_metadata(self.session_id, character_name)
+            npc_description = getattr(npc_metadata, "role", "") if npc_metadata else ""
+            npc_appearance = self.db.get_character_appearance(self.session_id, character_name) or ""
+            plan_obj = self.get_character_plan(character_name)
+            plan_first_step = plan_obj.steps[0] if plan_obj.steps else ""
+
             system_prompt = CHARACTER_INTRODUCTION_SYSTEM_PROMPT_TEMPLATE.format(
                 character_name=character_name,
-                character_description="",
+                character_description=npc_description,
                 fixed_traits="",
-                appearance="",
-                plan_first_step="",
+                appearance=npc_appearance,
+                plan_first_step=plan_first_step,
                 moral_guidelines=self.moral_guidelines
             )
-            user_prompt = f"You are {character_name}. Provide a brief introduction."
+
+            all_summaries = self.db.get_all_summaries(self.session_id, character_name)
+            chat_history_summary = "\n\n".join(all_summaries) if all_summaries else ""
+
+            setting_description = self.current_setting_description or ""
+            session_loc = self.db.get_current_location(self.session_id) or ""
+            if not session_loc and self.current_setting in self.settings:
+                session_loc = self.settings[self.current_setting].get('start_location', '')
+
+            latest_text = ""
+            visible_history = self.db.get_visible_messages_for_character(self.session_id, character_name)
+            if visible_history:
+                last_msg = visible_history[-1]
+                latest_text = f"{last_msg['sender']}: {last_msg['message']}"
+
+            user_prompt = INTRODUCTION_TEMPLATE.format(
+                name=character_name,
+                character_name=character_name,
+                appearance=npc_appearance,
+                character_description=npc_description,
+                fixed_traits="",
+                setting=setting_description,
+                location=session_loc,
+                chat_history_summary=chat_history_summary,
+                latest_dialogue=latest_text,
+                current_appearance=npc_appearance,
+                plan_first_step=plan_first_step
+            )
             return system_prompt, user_prompt
 
     def get_combined_location(self) -> str:
@@ -806,13 +844,16 @@ class ChatManager:
         # Normal turn
         try:
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Generating next interaction for {character_name}.")
+                await self.llm_status_callback(f"[LLM] Generating normal turn interaction for {character_name}.")
 
             system_prompt, formatted_prompt = self.build_prompt_for_character(character_name)
 
             llm = OllamaClient('src/multipersona_chat_app/config/llm_config.yaml', output_model=Interaction)
             if self.llm_client:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(f"[LLM] Prompting LLM for {character_name}'s action/dialogue.")
 
             interaction = await asyncio.to_thread(
                 llm.generate,
@@ -826,13 +867,13 @@ class ChatManager:
             if not interaction:
                 logger.warning(f"[generate_character_message] No response from LLM for {character_name}.")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"No interaction generated for {character_name}.")
+                    await self.llm_status_callback(f"[LLM] No interaction generated for {character_name}.")
                 return
 
             if not isinstance(interaction, Interaction):
                 logger.error(f"[generate_character_message] Malformed LLM output (not Interaction) for '{character_name}': {interaction}")
                 if self.llm_status_callback:
-                    await self.llm_status_callback(f"Invalid LLM output for {character_name}.")
+                    await self.llm_status_callback(f"[LLM] Invalid LLM output for {character_name}.")
                 return
 
             # Clean the fields
@@ -915,13 +956,13 @@ class ChatManager:
                 self.msg_counter_since_forced_update[character_name] = 0
 
             if self.llm_status_callback:
-                await self.llm_status_callback(f"Finished generating interaction for {character_name}.")
+                await self.llm_status_callback(f"[LLM] Finished generating interaction for {character_name}.")
 
         except Exception as e:
             logger.error(f"Error generating message for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"An error occurred while generating an interaction for {character_name}."
+                    f"[LLM] An error occurred while generating an interaction for {character_name}."
                 )
 
     async def generate_character_introduction_message(self, character_name: str):
@@ -942,7 +983,7 @@ class ChatManager:
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Generating an initial introduction for {character_name}, since it's their first time speaking."
+                    f"[LLM] Generating an initial introduction for {character_name}, since it's their first time speaking."
                 )
 
             introduction_response = await asyncio.to_thread(
@@ -980,7 +1021,7 @@ class ChatManager:
                 logger.info(f"Saved introduction message for {character_name}.")
                 if self.llm_status_callback:
                     await self.llm_status_callback(
-                        f"Introduction completed for {character_name}."
+                        f"[LLM] Introduction completed for {character_name}."
                     )
                 # Mark introduction as given after successful introduction message
                 self._introduction_given[character_name] = True
@@ -988,14 +1029,14 @@ class ChatManager:
                 logger.warning(f"Invalid or empty introduction for {character_name}. {introduction_response}")
                 if self.llm_status_callback:
                     await self.llm_status_callback(
-                        f"An invalid introduction was returned for {character_name}."
+                        f"[LLM] An invalid introduction was returned for {character_name}."
                     )
 
         except Exception as e:
             logger.error(f"Error generating introduction for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"An error occurred while generating the introduction for {character_name}."
+                    f"[LLM] An error occurred while generating the introduction for {character_name}."
                 )
 
     async def update_character_plan(self, character_name: str, triggered_message_id: Optional[int] = None):
@@ -1045,7 +1086,7 @@ class ChatManager:
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Generating (or updating) the plan for {character_name}."
+                    f"[LLM] Generating (or updating) the plan for {character_name}."
                 )
 
             plan_result = await asyncio.to_thread(
@@ -1059,7 +1100,7 @@ class ChatManager:
                 logger.warning("Plan update returned no result. Keeping existing plan.")
                 if self.llm_status_callback:
                     await self.llm_status_callback(
-                        f"No plan update was generated for {character_name}; retaining old plan."
+                        f"[LLM] No plan update was generated for {character_name}; retaining old plan."
                     )
                 return
 
@@ -1100,7 +1141,7 @@ class ChatManager:
 
                 if self.llm_status_callback:
                     await self.llm_status_callback(
-                        f"Plan updated for {character_name} (Goal: {new_goal})."
+                        f"[LLM] Plan updated for {character_name} (Goal: {new_goal})."
                     )
 
             except Exception as e2:
@@ -1109,14 +1150,14 @@ class ChatManager:
                 )
                 if self.llm_status_callback:
                     await self.llm_status_callback(
-                        f"Error parsing new plan for {character_name}; old plan remains."
+                        f"[LLM] Error parsing new plan for {character_name}; old plan remains."
                     )
 
         except Exception as e:
             logger.error(f"Error generating plan for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"An error occurred while generating/updating the plan for {character_name}."
+                    f"[LLM] An error occurred while generating/updating the plan for {character_name}."
                 )
 
     def build_plan_change_summary(self, old_goal: str, old_steps: List[str], new_goal: str, new_steps: List[str]) -> str:
@@ -1176,6 +1217,11 @@ class ChatManager:
                 violation_detected = True
                 violation_reasons.append("Dialogue text literally repeated in action field.")
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Computing embeddings for repetition check (attempt {tries + 1}) for {character_name}."
+                )
+
             action_embedding = embed_client.get_embedding(action_text)
             dialogue_embedding = embed_client.get_embedding(dialogue_text)
             actiondialogue_embedding = embed_client.get_embedding(action_text + ' ' + dialogue_text)
@@ -1227,6 +1273,11 @@ class ChatManager:
 
             logger.info(f"Violations for {character_name}: {violation_reasons} => Attempting regeneration #{tries}.")
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Attempting regeneration {tries} for {character_name} due to repetition/placeholder issues."
+                )
+
             regen_client = OllamaClient(
                 'src/multipersona_chat_app/config/llm_config.yaml',
                 output_model=Interaction
@@ -1264,7 +1315,7 @@ class ChatManager:
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Evaluating location update for {character_name}."
+                    f"[LLM] Evaluating location update for {character_name}."
                 )
 
             location_llm = OllamaClient(
@@ -1279,6 +1330,12 @@ class ChatManager:
                 moral_guidelines=self.moral_guidelines
             )
             dynamic_context = self.build_location_update_context(character_name)
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Prompting location update LLM for {character_name}."
+                )
+
             update_response = await asyncio.to_thread(
                 location_llm.generate,
                 prompt=dynamic_context,
@@ -1327,14 +1384,14 @@ class ChatManager:
 
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Done checking location update for {character_name}."
+                    f"[LLM] Done checking location update for {character_name}."
                 )
 
         except Exception as e:
             logger.error(f"Error in evaluate_location_update for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Error while evaluating location update for {character_name}."
+                    f"[LLM] Error while evaluating location update for {character_name}."
                 )
 
     def build_location_update_context(self, character_name: str) -> str:
@@ -1367,7 +1424,7 @@ class ChatManager:
         try:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Evaluating appearance update for {character_name}."
+                    f"[LLM] Evaluating appearance update for {character_name}."
                 )
 
             appearance_llm = OllamaClient(
@@ -1382,6 +1439,12 @@ class ChatManager:
                 moral_guidelines=self.moral_guidelines
             )
             dynamic_context = self.build_appearance_update_context(character_name)
+
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Prompting appearance update LLM for {character_name}."
+                )
+
             update_response = await asyncio.to_thread(
                 appearance_llm.generate,
                 prompt=dynamic_context,
@@ -1470,14 +1533,14 @@ class ChatManager:
 
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Done checking appearance update for {character_name}."
+                    f"[LLM] Done checking appearance update for {character_name}."
                 )
 
         except Exception as e:
             logger.error(f"Error in evaluate_appearance_update for {character_name}: {e}", exc_info=True)
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Error evaluating appearance update for {character_name}."
+                    f"[LLM] Error evaluating appearance update for {character_name}."
                 )
 
     def build_appearance_update_context(self, character_name: str) -> str:
@@ -1506,7 +1569,7 @@ class ChatManager:
         for c_name in session_chars:
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Updating location & appearance from scratch for {c_name}."
+                    f"[LLM] Updating location & appearance from scratch for {c_name}."
                 )
 
             if c_name in self.characters:
@@ -1557,6 +1620,11 @@ class ChatManager:
             )
             location_user = LOCATION_FROM_SCRATCH_USER_PROMPT.format(character_name=c_name)
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Prompting from-scratch location derivation for {c_name}."
+                )
+
             new_location_result = await asyncio.to_thread(
                 location_llm.generate,
                 prompt=location_user,
@@ -1595,6 +1663,11 @@ class ChatManager:
             )
             appearance_user = APPEARANCE_FROM_SCRATCH_USER_PROMPT.format(character_name=c_name)
 
+            if self.llm_status_callback:
+                await self.llm_status_callback(
+                    f"[LLM] Prompting from-scratch appearance derivation for {c_name}."
+                )
+
             new_appearance_result = await asyncio.to_thread(
                 appearance_llm.generate,
                 prompt=appearance_user,
@@ -1622,7 +1695,7 @@ class ChatManager:
 
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Done updating location & appearance from scratch for {c_name}."
+                    f"[LLM] Done updating location & appearance from scratch for {c_name}."
                 )
 
     def get_session_name(self) -> str:

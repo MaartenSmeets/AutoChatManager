@@ -394,12 +394,12 @@ def toggle_show_private_info(value: bool):
 @ui.refreshable
 def show_chat_display():
     """
-    Displays the chat messages, but omits any from the NPC Manager or any messages with visible=0.
-    If 'show_private_info' is True, also displays emotion and thoughts for each message.
+    Displays the chat messages, omitting any from "NPC Manager" or not visible.
+    If 'show_private_info' is True, also shows emotion and thoughts.
+    We now also append the NPC's role to their displayed name, e.g. John (Barkeeper).
     """
     chat_display.clear()
 
-    # Retrieve messages and exclude those from "NPC Manager" or those marked as not visible (visible=0)
     all_msgs = chat_manager.db.get_messages(chat_manager.session_id)
     msgs = [m for m in all_msgs if m["sender"] != "NPC Manager" and m["visible"] == 1]
 
@@ -410,15 +410,22 @@ def show_chat_display():
 
     with chat_display:
         for entry in msgs:
-            name = entry["sender"]
+            raw_name = entry["sender"]
             message = entry["message"]
             timestamp = entry["created_at"]
             dt = datetime.fromisoformat(timestamp)
             human_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
-            formatted_message = f"**{name}** [{human_timestamp}]:\n\n{message}"
+
+            # -- NEW: Append role if this is an NPC --
+            meta = chat_manager.db.get_character_metadata(chat_manager.session_id, raw_name)
+            if meta and meta.is_npc and meta.role.strip():
+                display_name = f"{raw_name} ({meta.role.strip()})"
+            else:
+                display_name = raw_name
+
+            formatted_message = f"**{display_name}** [{human_timestamp}]:\n\n{message}"
 
             if show_private_info:
-                # Display any emotion/thoughts if present, after stripping markdown
                 emotion = remove_markdown(entry["emotion"]) if entry["emotion"] else ""
                 thoughts = remove_markdown(entry["thoughts"]) if entry["thoughts"] else ""
                 if emotion.strip() or thoughts.strip():
@@ -438,24 +445,10 @@ async def automatic_conversation():
     """
     if chat_manager.automatic_running:
         speaker = await chat_manager.proceed_turn()
-        if speaker:
-            await chat_manager.generate_character_message(speaker)
+        #if speaker:
+        #    await chat_manager.generate_character_message(speaker)
         show_character_details.refresh()
         show_chat_display.refresh()
-
-
-async def next_character_response():
-    """
-    Manual "Next" button. Same pattern: proceed_turn() to increment, then generate the message.
-    """
-    if chat_manager.automatic_running:
-        return  # If in automatic mode, do nothing on manual "Next"
-
-    speaker = chat_manager.proceed_turn()
-    if speaker:
-        await chat_manager.generate_character_message(speaker)
-    show_character_details.refresh()
-    show_chat_display.refresh()
 
 
 async def add_character_from_dropdown(event):
