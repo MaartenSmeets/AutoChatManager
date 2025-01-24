@@ -378,12 +378,18 @@ class ChatManager:
 
             meta = self.db.get_character_metadata(self.session_id, c_name)
             if meta and meta.is_npc:
-                npc_should_speak = await self.npc_manager.npc_should_speak(
-                    c_name, self.current_setting_description or ""
-                )
-                logger.debug(f"[proceed_turn] NPC '{c_name}' npc_should_speak()={npc_should_speak}")
-                if not npc_should_speak:
-                    logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_should_speak=False.")
+                if hasattr(self, 'npc_manager') and self.npc_manager:
+                    npc_should_speak = await self.npc_manager.npc_should_speak(
+                        c_name, self.current_setting_description or ""
+                    )
+                    logger.debug(f"[proceed_turn] NPC '{c_name}' npc_should_speak()={npc_should_speak}")
+                    if not npc_should_speak:
+                        logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_should_speak=False.")
+                        self.current_index = (self.current_index + 1) % len(participants)
+                        count_attempts += 1
+                        continue
+                else:
+                    logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_manager is disabled.")
                     self.current_index = (self.current_index + 1) % len(participants)
                     count_attempts += 1
                     continue
@@ -418,17 +424,21 @@ class ChatManager:
 
         # Possibly create a new NPC only after everyone has introduced
         if all_introduced:
-            all_msgs = self.db.get_messages(self.session_id)
-            recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
-            setting_desc = self.current_setting_description or ""
-            new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
-            if new_npc_name:
-                logger.info(f"[proceed_turn] A new NPC '{new_npc_name}' was created. They speak immediately!")
-                # Register new NPC in introduction sequence
-                self.introduction_counter += 1
-                self.introduction_sequence[new_npc_name] = self.introduction_counter
-                # Immediate turn for the brand-new NPC (introduction only)
-                await self.generate_character_message(new_npc_name)
+            if hasattr(self, 'npc_manager') and self.npc_manager:
+                all_msgs = self.db.get_messages(self.session_id)
+                recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
+                setting_desc = self.current_setting_description or ""
+                new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
+                if new_npc_name:
+                    logger.info(f"[proceed_turn] A new NPC '{new_npc_name}' was created. They speak immediately!")
+                    # Register new NPC in introduction sequence
+                    self.introduction_counter += 1
+                    self.introduction_sequence[new_npc_name] = self.introduction_counter
+                    # Immediate turn for the brand-new NPC (introduction only)
+                    await self.generate_character_message(new_npc_name)
+            else:
+                 logger.debug("[proceed_turn] Skipping NPC creation because npc_manager is disabled.")
+
 
         return chosen_speaker
 
