@@ -8,6 +8,7 @@ import logging
 from typing import List, Dict
 from llm.ollama_client import OllamaClient
 from models.interaction import Interaction
+from npc_manager import NPCManager
 from models.character import Character
 from chats.chat_manager import ChatManager
 from utils import load_settings, get_available_characters, remove_markdown
@@ -25,8 +26,6 @@ chat_manager = None
 
 character_dropdown = None
 added_characters_container = None
-next_speaker_label = None
-next_button = None
 settings_dropdown = None
 setting_description_label = None
 session_dropdown = None
@@ -90,6 +89,15 @@ def init_chat_manager(session_id: str, settings: List[Dict]):
     # Register an LLM status callback on chat_manager so it can push messages via push_llm_status(...)
     chat_manager.set_llm_status_callback(push_llm_status)
 
+def toggle_npc_manager(value: bool):
+    if value:
+        chat_manager.npc_manager = NPCManager(
+            session_id=chat_manager.session_id,
+            db=chat_manager.db,
+            llm_client=chat_manager.llm_client
+        )
+    else:
+        chat_manager.npc_manager = None
 
 
 def refresh_added_characters():
@@ -106,9 +114,13 @@ def refresh_added_characters():
 
 
 @ui.refreshable
+# In /home/maarten/AutoChatManager/src/multipersona_chat_app/ui/app.py
+
+@ui.refreshable
 def show_character_details():
     """
-    Displays character details. If 'show_private_info' is False, hides the plan (goal/steps).
+    Displays character details. If show_private_info is False, hides plan details.
+    Now also displays an NPC's role/purpose from the character_metadata table.
     """
     global character_details_display
     if character_details_display is not None:
@@ -121,78 +133,70 @@ def show_character_details():
             with character_details_display:
                 for c_name in char_names:
                     with ui.expansion(f"{c_name} Details", icon='person').classes('w-full mb-2 p-2 bg-gray-50 rounded-md shadow-sm'):
+                        # Location
+                        loc = chat_manager.db.get_character_location(chat_manager.session_id, c_name)
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('location_on').classes('text-gray-600 mr-2')
+                            ui.label("Location:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(loc if loc.strip() else "(Unknown)").classes('text-sm text-gray-700')
 
-                                loc = chat_manager.db.get_character_location(chat_manager.session_id, c_name)
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('location_on').classes('text-gray-600 mr-2')
-                                    ui.label(f"Location:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{loc if loc.strip() else '(Unknown)'}").classes('text-sm text-gray-700')
+                        # Appearance segments
+                        seg = chat_manager.db.get_current_appearance_segments(chat_manager.session_id, c_name)
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('face_retouching_natural').classes('text-gray-600 mr-2')
+                            ui.label("Hair:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(seg['hair'] if seg['hair'].strip() else "(None)").classes('text-sm text-gray-700')
 
-                                seg = chat_manager.db.get_current_appearance_segments(chat_manager.session_id, c_name)
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('checkroom').classes('text-gray-600 mr-2')
+                            ui.label("Clothing:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(seg['clothing'] if seg['clothing'].strip() else "(None)").classes('text-sm text-gray-700')
 
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('face_retouching_natural').classes('text-gray-600 mr-2')
-                                    ui.label(f"Hair:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{seg['hair'] if seg['hair'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('redeem').classes('text-gray-600 mr-2')
+                            ui.label("Accessories:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(seg['accessories_and_held_items'] if seg['accessories_and_held_items'].strip() else "(None)").classes('text-sm text-gray-700')
 
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('checkroom').classes('text-gray-600 mr-2')
-                                    ui.label(f"Clothing:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{seg['clothing'] if seg['clothing'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('accessibility_new').classes('text-gray-600 mr-2')
+                            ui.label("Posture:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(seg['posture_and_body_language'] if seg['posture_and_body_language'].strip() else "(None)").classes('text-sm text-gray-700')
 
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('redeem').classes('text-gray-600 mr-2')
-                                    ui.label(f"Accessories:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{seg['accessories_and_held_items'] if seg['accessories_and_held_items'].strip() else '(None)'}").classes('text-sm text-gray-700')
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('accessibility_new').classes('text-gray-600 mr-2')
-                                    ui.label(f"Posture:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{seg['posture_and_body_language'] if seg['posture_and_body_language'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('mood').classes('text-gray-600 mr-2')
+                            ui.label("Expression:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(seg['facial_expression'] if seg['facial_expression'].strip() else "(None)").classes('text-sm text-gray-700')
 
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('mood').classes('text-gray-600 mr-2')
-                                    ui.label(f"Expression:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{seg['facial_expression'] if seg['facial_expression'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                        with ui.row().classes('mb-1 items-center'):
+                            ui.icon('info').classes('text-gray-600 mr-2')
+                            ui.label("Other:").classes('text-sm text-gray-700 font-semibold')
+                            ui.label(seg['other_relevant_details'] if seg['other_relevant_details'].strip() else "(None)").classes('text-sm text-gray-700')
 
-                                with ui.row().classes('mb-1 items-center'):
-                                    ui.icon('info').classes('text-gray-600 mr-2')
-                                    ui.label(f"Other Details:").classes('text-sm text-gray-700 font-semibold')
-                                    ui.label(f"{seg['other_relevant_details'] if seg['other_relevant_details'].strip() else '(None)'}").classes('text-sm text-gray-700')
+                        # Show NPC role if is_npc
+                        meta = chat_manager.db.get_character_metadata(chat_manager.session_id, c_name)
+                        if meta and meta.is_npc:
+                            with ui.row().classes('mb-1 items-center'):
+                                ui.icon('badge').classes('text-gray-600 mr-2')
+                                ui.label("NPC Role:").classes('text-sm text-gray-700 font-semibold')
+                                ui.label(meta.role if meta.role.strip() else "(No role)").classes('text-sm text-gray-700')
 
-                                if show_private_info:
-                                    plan_data = chat_manager.db.get_character_plan(chat_manager.session_id, c_name)
-                                    if plan_data:
-                                        with ui.row().classes('mt-2 items-center'):
-                                            ui.icon('flag').classes('text-gray-600 mr-2')
-                                            ui.label(f"Goal:").classes('text-sm text-gray-700 font-semibold')
-                                            ui.label(f"{plan_data['goal'] or '(No goal)'}").classes('text-sm text-gray-700')
-                                        with ui.row().classes('mb-1 items-top'):
-                                            ui.icon('list').classes('text-gray-600 mr-2')
-                                            ui.label(f"Steps:").classes('text-sm text-gray-700 font-semibold')
-                                            steps_text = plan_data['steps'] if plan_data['steps'] else []
-                                            ui.label(f"{steps_text}").classes('text-sm text-gray-700')
-                                    else:
-                                        with ui.row().classes('mb-2'):
-                                            ui.label("No plan found (it may be generated soon).").classes('text-gray-600 italic text-sm')
+                        # Show plan (goal/steps) if show_private_info = True
+                        if show_private_info:
+                            plan_data = chat_manager.db.get_character_plan(chat_manager.session_id, c_name)
+                            if plan_data:
+                                with ui.row().classes('mt-2 items-center'):
+                                    ui.icon('flag').classes('text-gray-600 mr-2')
+                                    ui.label("Goal:").classes('text-sm text-gray-700 font-semibold')
+                                    ui.label(plan_data['goal'] or "(No goal)").classes('text-sm text-gray-700')
+                                with ui.row().classes('mb-1 items-top'):
+                                    ui.icon('list').classes('text-gray-600 mr-2')
+                                    ui.label("Steps:").classes('text-sm text-gray-700 font-semibold')
+                                    steps_text = plan_data['steps'] if plan_data['steps'] else []
+                                    ui.label(str(steps_text)).classes('text-sm text-gray-700')
+                            else:
+                                ui.label("No plan data available.").classes('text-gray-500 italic text-sm')
     else:
         logger.error("character_details_display is not initialized.")
-
-
-def update_next_speaker_label():
-    """
-    For display only: use get_upcoming_speaker() so we never alter turn order.
-    """
-    ns = chat_manager.get_upcoming_speaker()
-    if ns:
-        if next_speaker_label is not None:
-            next_speaker_label.text = f"Next speaker: {ns}"
-            next_speaker_label.update()
-    else:
-        if next_speaker_label is not None:
-            next_speaker_label.text = "No characters available."
-            next_speaker_label.update()
-
-
 
 def populate_session_dropdown():
     sessions = chat_manager.db.get_all_sessions()
@@ -328,7 +332,6 @@ def load_session(session_id: str):
     refresh_added_characters()
     show_chat_display.refresh()
     show_character_details.refresh()
-    update_next_speaker_label()
     populate_session_dropdown()
 
     # Disable setting dropdown if session already has messages
@@ -382,8 +385,6 @@ def toggle_automatic_chat(e):
         chat_manager.stop_automatic_chat()
         if auto_timer:
             auto_timer.active = False
-    next_button.enabled = not chat_manager.automatic_running
-    next_button.update()
 
 
 def toggle_npc_manager(value: bool):
@@ -403,12 +404,12 @@ def toggle_show_private_info(value: bool):
 @ui.refreshable
 def show_chat_display():
     """
-    Displays the chat messages, but omits any from the NPC Manager or any messages with visible=0.
-    If 'show_private_info' is True, also displays emotion and thoughts for each message.
+    Displays the chat messages, omitting any from "NPC Manager" or not visible.
+    If 'show_private_info' is True, also shows emotion and thoughts.
+    We now also append the NPC's role to their displayed name, e.g. John (Barkeeper).
     """
     chat_display.clear()
 
-    # Retrieve messages and exclude those from "NPC Manager" or those marked as not visible (visible=0)
     all_msgs = chat_manager.db.get_messages(chat_manager.session_id)
     msgs = [m for m in all_msgs if m["sender"] != "NPC Manager" and m["visible"] == 1]
 
@@ -419,15 +420,22 @@ def show_chat_display():
 
     with chat_display:
         for entry in msgs:
-            name = entry["sender"]
+            raw_name = entry["sender"]
             message = entry["message"]
             timestamp = entry["created_at"]
             dt = datetime.fromisoformat(timestamp)
             human_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
-            formatted_message = f"**{name}** [{human_timestamp}]:\n\n{message}"
+
+            # -- NEW: Append role if this is an NPC --
+            meta = chat_manager.db.get_character_metadata(chat_manager.session_id, raw_name)
+            if meta and meta.is_npc and meta.role.strip():
+                display_name = f"{raw_name} ({meta.role.strip()})"
+            else:
+                display_name = raw_name
+
+            formatted_message = f"**{display_name}** [{human_timestamp}]:\n\n{message}"
 
             if show_private_info:
-                # Display any emotion/thoughts if present, after stripping markdown
                 emotion = remove_markdown(entry["emotion"]) if entry["emotion"] else ""
                 thoughts = remove_markdown(entry["thoughts"]) if entry["thoughts"] else ""
                 if emotion.strip() or thoughts.strip():
@@ -446,27 +454,11 @@ async def automatic_conversation():
     then generate the speaker's message. Then update the label & refresh UI.
     """
     if chat_manager.automatic_running:
-        speaker = chat_manager.proceed_turn()
-        if speaker:
-            await chat_manager.generate_character_message(speaker)
-        update_next_speaker_label()
+        speaker = await chat_manager.proceed_turn()
+        #if speaker:
+        #    await chat_manager.generate_character_message(speaker)
         show_character_details.refresh()
         show_chat_display.refresh()
-
-
-async def next_character_response():
-    """
-    Manual "Next" button. Same pattern: proceed_turn() to increment, then generate the message.
-    """
-    if chat_manager.automatic_running:
-        return  # If in automatic mode, do nothing on manual "Next"
-
-    speaker = chat_manager.proceed_turn()
-    if speaker:
-        await chat_manager.generate_character_message(speaker)
-    update_next_speaker_label()
-    show_character_details.refresh()
-    show_chat_display.refresh()
 
 
 async def add_character_from_dropdown(event):
@@ -483,7 +475,6 @@ async def add_character_from_dropdown(event):
             show_character_details.refresh()
         else:
             pass
-    update_next_speaker_label()
     character_dropdown.value = None
     character_dropdown.update()
 
@@ -494,7 +485,6 @@ async def remove_character_async(name: str):
     refresh_added_characters()
     show_chat_display.refresh()
     show_character_details.refresh()
-    update_next_speaker_label()
 
 
 async def update_all_characters_info():
@@ -544,7 +534,7 @@ def on_local_model_select(event):
 
 def main_page():
     global character_dropdown, added_characters_container
-    global next_speaker_label, next_button, settings_dropdown, setting_description_label
+    global settings_dropdown, setting_description_label
     global session_dropdown, chat_display, current_location_label, llm_status_label
     global character_details_display, settings_expansion, session_expansion, model_expansion, toggles_expansion
     global local_model_dropdown
@@ -616,14 +606,6 @@ def main_page():
 
                 added_characters_container = ui.row().classes('flex-wrap gap-2') # Chips container
                 refresh_added_characters()
-
-            with ui.row().classes('w-full items-center justify-between mb-2'): # Space between labels and button
-                next_speaker_label = ui.label("Next speaker:").classes('text-gray-800')
-                update_next_speaker_label()
-                next_button = ui.button("Next Turn", on_click=lambda: asyncio.create_task(next_character_response()), icon='skip_next').props('outline')
-                next_button.enabled = not chat_manager.automatic_running
-                next_button.update()
-
 
             ui.button(
                 "Update All Character Info",

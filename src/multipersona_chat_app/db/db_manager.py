@@ -1,12 +1,15 @@
+# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/db/db_manager.py
+
 import sqlite3
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
+
 from models.interaction import AppearanceSegments
+from models.character_metadata import CharacterMetadata
 
 logger = logging.getLogger(__name__)
-
 
 def merge_location_update(old_location: str, new_location: str) -> str:
     if not new_location.strip():
@@ -30,23 +33,18 @@ class DBManager:
         conn = self._ensure_connection()
         c = conn.cursor()
 
-        # Create sessions table
+        # sessions table
         c.execute('''
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 current_setting TEXT,
-                current_location TEXT
+                current_location TEXT,
+                setting_description TEXT
             )
         ''')
 
-        # Add a new column for storing the setting description if it doesn't exist
-        try:
-            c.execute('ALTER TABLE sessions ADD COLUMN setting_description TEXT')
-        except sqlite3.OperationalError:
-            pass
-
-        # Create messages table (no longer uses 'affect'; now uses emotion/thoughts)
+        # messages table
         c.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,19 +61,7 @@ class DBManager:
             )
         ''')
 
-        # Ensure we have columns emotion and thoughts in case of older schema
-        try:
-            c.execute("ALTER TABLE messages ADD COLUMN emotion TEXT")
-        except sqlite3.OperationalError:
-            pass
-        try:
-            c.execute("ALTER TABLE messages ADD COLUMN thoughts TEXT")
-        except sqlite3.OperationalError:
-            pass
-
-        # Remove or ignore old 'affect' column if it existed
-
-        # Create message_visibility table
+        # message_visibility table
         c.execute('''
             CREATE TABLE IF NOT EXISTS message_visibility (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +74,7 @@ class DBManager:
             )
         ''')
 
-        # Create summaries table
+        # summaries table
         c.execute('''
             CREATE TABLE IF NOT EXISTS summaries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +86,7 @@ class DBManager:
             )
         ''')
 
-        # Create location_history table
+        # location_history table
         c.execute('''
             CREATE TABLE IF NOT EXISTS location_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,47 +99,36 @@ class DBManager:
             )
         ''')
 
-        # Create session_characters table
+        # session_characters table (holds name, location, appearance subfields)
         c.execute('''
             CREATE TABLE IF NOT EXISTS session_characters (
                 session_id TEXT NOT NULL,
                 character_name TEXT NOT NULL,
                 current_location TEXT,
                 current_appearance TEXT,
-                PRIMARY KEY (session_id, character_name),
-                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
-            )
-        ''')
-
-        # Ensure subfields exist in session_characters, including new facial_expression
-        subfields_to_add = [
-            ("hair", "TEXT"),
-            ("clothing", "TEXT"),
-            ("accessories_and_held_items", "TEXT"),
-            ("posture_and_body_language", "TEXT"),
-            ("facial_expression", "TEXT"),  # New field
-            ("other_relevant_details", "TEXT"),
-        ]
-        for col, ctype in subfields_to_add:
-            try:
-                c.execute(f"ALTER TABLE session_characters ADD COLUMN {col} {ctype}")
-            except sqlite3.OperationalError:
-                pass
-
-        # Create appearance_history table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS appearance_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                character_name TEXT NOT NULL,
-
                 hair TEXT,
                 clothing TEXT,
                 accessories_and_held_items TEXT,
                 posture_and_body_language TEXT,
                 facial_expression TEXT,
                 other_relevant_details TEXT,
+                PRIMARY KEY (session_id, character_name),
+                FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+            )
+        ''')
 
+        # appearance_history table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS appearance_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                character_name TEXT NOT NULL,
+                hair TEXT,
+                clothing TEXT,
+                accessories_and_held_items TEXT,
+                posture_and_body_language TEXT,
+                facial_expression TEXT,
+                other_relevant_details TEXT,
                 changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 triggered_by_message_id INTEGER,
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id),
@@ -161,7 +136,7 @@ class DBManager:
             )
         ''')
 
-        # Create character_prompts table
+        # character_prompts table
         c.execute('''
             CREATE TABLE IF NOT EXISTS character_prompts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,7 +149,7 @@ class DBManager:
             )
         ''')
 
-        # Create character_plans table
+        # character_plans table
         c.execute('''
             CREATE TABLE IF NOT EXISTS character_plans (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,7 +164,7 @@ class DBManager:
             )
         ''')
 
-        # Create character_plans_history table
+        # character_plans_history table
         c.execute('''
             CREATE TABLE IF NOT EXISTS character_plans_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,139 +181,26 @@ class DBManager:
             )
         ''')
 
+        # NEW: character_metadata table for extra data like is_npc, role, etc.
         c.execute('''
-            CREATE TABLE IF NOT EXISTS session_npcs (
+            CREATE TABLE IF NOT EXISTS character_metadata (
                 session_id TEXT NOT NULL,
-                npc_name TEXT NOT NULL,
-                purpose TEXT NOT NULL,
-                appearance TEXT NOT NULL,
-                location TEXT NOT NULL,
-                PRIMARY KEY (session_id, npc_name)
-            )
-        ''')
-
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS npc_summaries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                npc_name TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                covered_up_to_message_id INTEGER,
+                character_name TEXT NOT NULL,
+                is_npc INTEGER DEFAULT 0,
+                role TEXT DEFAULT '',
+                PRIMARY KEY (session_id, character_name),
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id)
             )
         ''')
 
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS npc_message_visibility (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                npc_name TEXT NOT NULL,
-                message_id INTEGER NOT NULL,
-                visible INTEGER DEFAULT 1,
-                FOREIGN KEY(session_id) REFERENCES sessions(session_id),
-                FOREIGN KEY(message_id) REFERENCES messages(id)
-            )
-        ''')
-
         conn.commit()
         conn.close()
-        logger.info("Database initialized or confirmed with up-to-date schema (including NPC tables).")
+        logger.info("Database schema initialized/updated (unified for PCs/NPCs).")
 
-    def add_npc_to_session(self, session_id: str, npc_name: str, purpose: str, appearance: str, location: str):
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            INSERT OR IGNORE INTO session_npcs (session_id, npc_name, purpose, appearance, location)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (session_id, npc_name, purpose, appearance, location))
-        conn.commit()
-        conn.close()
+    # ----------------------------------------------------------------
+    # Session queries
+    # ----------------------------------------------------------------
 
-
-    def get_all_npcs_in_session(self, session_id: str) -> List[str]:
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            SELECT npc_name FROM session_npcs
-            WHERE session_id = ?
-        ''', (session_id,))
-        rows = c.fetchall()
-        conn.close()
-        return [r[0] for r in rows]
-
-
-    def get_npc_data(self, session_id: str, npc_name: str) -> Optional[Dict[str, str]]:
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            SELECT purpose, appearance, location
-            FROM session_npcs
-            WHERE session_id = ? AND npc_name = ?
-        ''', (session_id, npc_name))
-        row = c.fetchone()
-        conn.close()
-        if row:
-            return {
-                "purpose": row[0],
-                "appearance": row[1],
-                "location": row[2]
-            }
-        return None
-
-
-    def get_visible_messages_for_npc(self, session_id: str, npc_name: str) -> List[Dict[str, Any]]:
-        """
-        Return messages that are still 'visible' for this NPC, in ascending order.
-        This is analogous to get_visible_messages_for_character, but for NPC.
-        """
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            SELECT m.id, m.sender, m.message, nmv.visible, m.message_type,
-                m.emotion, m.thoughts, m.created_at
-            FROM messages m
-            JOIN npc_message_visibility nmv ON m.id = nmv.message_id
-            WHERE nmv.session_id = ?
-            AND nmv.npc_name = ?
-            AND nmv.visible = 1
-            ORDER BY m.id ASC
-        ''', (session_id, npc_name))
-        rows = c.fetchall()
-        conn.close()
-        result = []
-        for row in rows:
-            result.append({
-                'id': row[0],
-                'sender': row[1],
-                'message': row[2],
-                'visible': bool(row[3]),
-                'message_type': row[4],
-                'emotion': row[5],
-                'thoughts': row[6],
-                'created_at': row[7],
-            })
-        return result
-
-
-    # --- New getters/setters for the session-level setting description ---
-    def get_current_setting_description(self, session_id: str) -> Optional[str]:
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('SELECT setting_description FROM sessions WHERE session_id = ?', (session_id,))
-        row = c.fetchone()
-        conn.close()
-        if row and row[0]:
-            return row[0]
-        return None
-
-    def update_current_setting_description(self, session_id: str, description: str):
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('UPDATE sessions SET setting_description = ? WHERE session_id = ?', (description, session_id))
-        conn.commit()
-        conn.close()
-
-    # Session Management
     def create_session(self, session_id: str, name: str):
         conn = self._ensure_connection()
         c = conn.cursor()
@@ -354,18 +216,23 @@ class DBManager:
     def delete_session(self, session_id: str):
         conn = self._ensure_connection()
         c = conn.cursor()
+
+        # Remove everything associated with this session
         c.execute('DELETE FROM summaries WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM messages WHERE session_id = ?', (session_id,))
+        c.execute('DELETE FROM message_visibility WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM location_history WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM session_characters WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM character_prompts WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM appearance_history WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM character_plans WHERE session_id = ?', (session_id,))
         c.execute('DELETE FROM character_plans_history WHERE session_id = ?', (session_id,))
-        c.execute('DELETE FROM message_visibility WHERE session_id = ?', (session_id,))
+        c.execute('DELETE FROM character_metadata WHERE session_id = ?', (session_id,))
+        c.execute('DELETE FROM sessions WHERE session_id = ?', (session_id,))
+
         conn.commit()
         conn.close()
-        logger.info(f"Session with ID '{session_id}' and all associated data deleted.")
+        logger.info(f"Session with ID '{session_id}' and all related data deleted.")
 
     def get_all_sessions(self) -> List[Dict[str, Any]]:
         conn = self._ensure_connection()
@@ -393,6 +260,23 @@ class DBManager:
         conn.commit()
         conn.close()
 
+    def get_current_setting_description(self, session_id: str) -> Optional[str]:
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('SELECT setting_description FROM sessions WHERE session_id = ?', (session_id,))
+        row = c.fetchone()
+        conn.close()
+        if row and row[0]:
+            return row[0]
+        return None
+
+    def update_current_setting_description(self, session_id: str, description: str):
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('UPDATE sessions SET setting_description = ? WHERE session_id = ?', (description, session_id))
+        conn.commit()
+        conn.close()
+
     def get_current_location(self, session_id: str) -> Optional[str]:
         conn = self._ensure_connection()
         c = conn.cursor()
@@ -408,8 +292,10 @@ class DBManager:
         c = conn.cursor()
         c.execute('UPDATE sessions SET current_location = ? WHERE session_id = ?', (location, session_id))
         if triggered_by_message_id is not None:
-            c.execute('INSERT INTO location_history (session_id, location, triggered_by_message_id) VALUES (?, ?, ?)',
-                      (session_id, location, triggered_by_message_id))
+            c.execute('''
+                INSERT INTO location_history (session_id, location, triggered_by_message_id)
+                VALUES (?, ?, ?)
+            ''', (session_id, location, triggered_by_message_id))
         conn.commit()
         conn.close()
 
@@ -423,6 +309,7 @@ class DBManager:
             ORDER BY changed_at ASC
         ''', (session_id,))
         rows = c.fetchall()
+        conn.close()
         history = []
         for row in rows:
             history.append({
@@ -430,31 +317,40 @@ class DBManager:
                 'changed_at': row[1],
                 'triggered_by_message_id': row[2]
             })
-        conn.close()
         return history
 
-    # Character location & appearance management
-    def add_character_to_session(self, session_id: str, character_name: str, initial_location: str = "", initial_appearance: str = ""):
+    # ----------------------------------------------------------------
+    # Character management (session_characters + metadata)
+    # ----------------------------------------------------------------
+
+    def add_character_to_session(self, session_id: str, character_name: str,
+                                 initial_location: str = "", initial_appearance: str = ""):
+        """Creates a row in session_characters if not present."""
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            INSERT OR IGNORE INTO session_characters (session_id, character_name, current_location, current_appearance)
+            INSERT OR IGNORE INTO session_characters 
+            (session_id, character_name, current_location, current_appearance)
             VALUES (?, ?, ?, ?)
         ''', (session_id, character_name, initial_location, initial_appearance))
         conn.commit()
         conn.close()
 
     def remove_character_from_session(self, session_id: str, character_name: str):
+        """Removes the character from session_characters and associated metadata."""
         conn = self._ensure_connection()
         c = conn.cursor()
-        c.execute('DELETE FROM session_characters WHERE session_id = ? AND character_name = ?', (session_id, character_name))
+        c.execute('DELETE FROM session_characters WHERE session_id=? AND character_name=?',
+                  (session_id, character_name))
+        c.execute('DELETE FROM character_metadata WHERE session_id=? AND character_name=?',
+                  (session_id, character_name))
         conn.commit()
         conn.close()
 
     def get_session_characters(self, session_id: str) -> List[str]:
         conn = self._ensure_connection()
         c = conn.cursor()
-        c.execute('SELECT character_name FROM session_characters WHERE session_id = ?', (session_id,))
+        c.execute('SELECT character_name FROM session_characters WHERE session_id=?', (session_id,))
         rows = c.fetchall()
         conn.close()
         return [r[0] for r in rows]
@@ -463,9 +359,8 @@ class DBManager:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            SELECT current_location
-            FROM session_characters
-            WHERE session_id = ? AND character_name = ?
+            SELECT current_location FROM session_characters
+            WHERE session_id=? AND character_name=?
         ''', (session_id, character_name))
         row = c.fetchone()
         conn.close()
@@ -475,68 +370,65 @@ class DBManager:
 
     def get_character_appearance(self, session_id: str, character_name: str) -> str:
         """
-        Return a user-facing text that combines the appearance subfields if present.
+        Return a user-facing text that combines the subfields if present.
         """
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            SELECT current_appearance, hair, clothing, accessories_and_held_items, 
+            SELECT current_appearance, hair, clothing, accessories_and_held_items,
                    posture_and_body_language, facial_expression, other_relevant_details
             FROM session_characters
-            WHERE session_id = ? AND character_name = ?
+            WHERE session_id=? AND character_name=?
         ''', (session_id, character_name))
         row = c.fetchone()
         conn.close()
-        if row:
-            legacy_app = row[0] or ""
-            hair = row[1] or ""
-            cloth = row[2] or ""
-            acc = row[3] or ""
-            posture = row[4] or ""
-            face = row[5] or ""
-            other = row[6] or ""
-            combined = []
-            if hair.strip():
-                combined.append(f"Hair: {hair}")
-            if cloth.strip():
-                combined.append(f"Clothing: {cloth}")
-            if acc.strip():
-                combined.append(f"Accessories/Held Items: {acc}")
-            if posture.strip():
-                combined.append(f"Posture/Body Language: {posture}")
-            if face.strip():
-                combined.append(f"Facial Expression: {face}")
-            if other.strip():
-                combined.append(f"Other Relevant Details: {other}")
-            if not combined:
-                return legacy_app
-            return " | ".join(combined)
-        return ""
+        if not row:
+            return ""
+        legacy_app = row[0] or ""
+        hair = row[1] or ""
+        cloth = row[2] or ""
+        acc = row[3] or ""
+        posture = row[4] or ""
+        face = row[5] or ""
+        other = row[6] or ""
+        combined = []
+        if hair.strip():
+            combined.append(f"Hair: {hair}")
+        if cloth.strip():
+            combined.append(f"Clothing: {cloth}")
+        if acc.strip():
+            combined.append(f"Accessories: {acc}")
+        if posture.strip():
+            combined.append(f"Posture: {posture}")
+        if face.strip():
+            combined.append(f"Facial Expression: {face}")
+        if other.strip():
+            combined.append(f"Other: {other}")
+        if not combined:
+            return legacy_app
+        return " | ".join(combined)
 
     def get_current_appearance_segments(self, session_id: str, character_name: str) -> Dict[str, str]:
-        """
-        Return the subfields as a dict to compare easily with new changes.
-        """
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             SELECT hair, clothing, accessories_and_held_items, posture_and_body_language,
                    facial_expression, other_relevant_details
             FROM session_characters
-            WHERE session_id = ? AND character_name = ?
+            WHERE session_id=? AND character_name=?
         ''', (session_id, character_name))
         row = c.fetchone()
         conn.close()
-        if row:
-            return {
-                'hair': row[0] or "",
-                'clothing': row[1] or "",
-                'accessories_and_held_items': row[2] or "",
-                'posture_and_body_language': row[3] or "",
-                'facial_expression': row[4] or "",
-                'other_relevant_details': row[5] or ""
-            }
-        return {}
+        if not row:
+            return {}
+        return {
+            'hair': row[0] or "",
+            'clothing': row[1] or "",
+            'accessories_and_held_items': row[2] or "",
+            'posture_and_body_language': row[3] or "",
+            'facial_expression': row[4] or "",
+            'other_relevant_details': row[5] or ""
+        }
 
     def get_all_character_locations(self, session_id: str) -> Dict[str, str]:
         conn = self._ensure_connection()
@@ -544,7 +436,7 @@ class DBManager:
         c.execute('''
             SELECT character_name, current_location
             FROM session_characters
-            WHERE session_id = ?
+            WHERE session_id=?
         ''', (session_id,))
         rows = c.fetchall()
         conn.close()
@@ -557,10 +449,11 @@ class DBManager:
             SELECT character_name, current_appearance, hair, clothing, accessories_and_held_items,
                    posture_and_body_language, facial_expression, other_relevant_details
             FROM session_characters
-            WHERE session_id = ?
+            WHERE session_id=?
         ''', (session_id,))
         rows = c.fetchall()
         conn.close()
+
         results = {}
         for row in rows:
             c_name = row[0]
@@ -577,9 +470,9 @@ class DBManager:
             if cloth.strip():
                 combined.append(f"Clothing: {cloth}")
             if acc.strip():
-                combined.append(f"Accessories/Held Items: {acc}")
+                combined.append(f"Accessories: {acc}")
             if posture.strip():
-                combined.append(f"Posture/Body: {posture}")
+                combined.append(f"Posture: {posture}")
             if face.strip():
                 combined.append(f"Facial Expression: {face}")
             if other.strip():
@@ -590,87 +483,79 @@ class DBManager:
                 results[c_name] = " | ".join(combined)
         return results
 
-    def update_character_location(self, session_id: str, character_name: str, new_location: str, triggered_by_message_id: Optional[int] = None) -> bool:
+    def update_character_location(self, session_id: str, character_name: str,
+                                  new_location: str, triggered_by_message_id: Optional[int] = None) -> bool:
         old_location = self.get_character_location(session_id, character_name)
-        updated_location = merge_location_update(old_location, new_location)
-        if updated_location == old_location:
+        updated = merge_location_update(old_location, new_location)
+        if updated == old_location:
             return False
 
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             UPDATE session_characters
-            SET current_location = ?
-            WHERE session_id = ? AND character_name = ?
-        ''', (updated_location, session_id, character_name))
+            SET current_location=?
+            WHERE session_id=? AND character_name=?
+        ''', (updated, session_id, character_name))
         conn.commit()
         conn.close()
 
         if triggered_by_message_id:
-            conn = self._ensure_connection()
-            c = conn.cursor()
-            c.execute('INSERT INTO location_history (session_id, location, triggered_by_message_id) VALUES (?, ?, ?)',
-                      (session_id, updated_location, triggered_by_message_id))
-            conn.commit()
-            conn.close()
+            conn2 = self._ensure_connection()
+            c2 = conn2.cursor()
+            c2.execute('''
+                INSERT INTO location_history (session_id, location, triggered_by_message_id)
+                VALUES (?, ?, ?)
+            ''', (session_id, updated, triggered_by_message_id))
+            conn2.commit()
+            conn2.close()
 
         return True
 
-    def update_character_appearance(self, session_id: str, character_name: str, new_appearance: AppearanceSegments, triggered_by_message_id: Optional[int] = None) -> bool:
+    def update_character_appearance(self, session_id: str, character_name: str,
+                                    new_appearance: AppearanceSegments,
+                                    triggered_by_message_id: Optional[int] = None) -> bool:
+        old_segments = self.get_current_appearance_segments(session_id, character_name)
+        if not old_segments:
+            return False
+
+        merged_hair = merge_appearance_subfield(old_segments['hair'], new_appearance.hair or "")
+        merged_cloth = merge_appearance_subfield(old_segments['clothing'], new_appearance.clothing or "")
+        merged_acc = merge_appearance_subfield(old_segments['accessories_and_held_items'], new_appearance.accessories_and_held_items or "")
+        merged_posture = merge_appearance_subfield(old_segments['posture_and_body_language'], new_appearance.posture_and_body_language or "")
+        merged_face = merge_appearance_subfield(old_segments['facial_expression'], new_appearance.facial_expression or "")
+        merged_other = merge_appearance_subfield(old_segments['other_relevant_details'], new_appearance.other_relevant_details or "")
+
+        nothing_changed = (
+            merged_hair == old_segments['hair'] and
+            merged_cloth == old_segments['clothing'] and
+            merged_acc == old_segments['accessories_and_held_items'] and
+            merged_posture == old_segments['posture_and_body_language'] and
+            merged_face == old_segments['facial_expression'] and
+            merged_other == old_segments['other_relevant_details']
+        )
+        if nothing_changed:
+            return False
+
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            SELECT hair, clothing, accessories_and_held_items, posture_and_body_language,
-                   facial_expression, other_relevant_details
-            FROM session_characters
-            WHERE session_id = ? AND character_name = ?
-        ''', (session_id, character_name))
-        row = c.fetchone()
-        if not row:
-            conn.close()
-            return False
-
-        old_hair, old_cloth, old_acc, old_posture, old_face, old_other = row
-        merged_hair = merge_appearance_subfield(old_hair or "", new_appearance.hair or "")
-        merged_cloth = merge_appearance_subfield(old_cloth or "", new_appearance.clothing or "")
-        merged_acc = merge_appearance_subfield(old_acc or "", new_appearance.accessories_and_held_items or "")
-        merged_posture = merge_appearance_subfield(old_posture or "", new_appearance.posture_and_body_language or "")
-        merged_face = merge_appearance_subfield(old_face or "", new_appearance.facial_expression or "")
-        merged_other = merge_appearance_subfield(old_other or "", new_appearance.other_relevant_details or "")
-
-        nothing_changed = (
-            merged_hair == (old_hair or "") and
-            merged_cloth == (old_cloth or "") and
-            merged_acc == (old_acc or "") and
-            merged_posture == (old_posture or "") and
-            merged_face == (old_face or "") and
-            merged_other == (old_other or "")
-        )
-        if nothing_changed:
-            conn.close()
-            return False
-
-        c.execute('''
             UPDATE session_characters
-            SET hair = ?, clothing = ?, accessories_and_held_items = ?,
-                posture_and_body_language = ?, facial_expression = ?, other_relevant_details = ?
-            WHERE session_id = ? AND character_name = ?
+            SET hair=?, clothing=?, accessories_and_held_items=?,
+                posture_and_body_language=?, facial_expression=?, other_relevant_details=?
+            WHERE session_id=? AND character_name=?
         ''', (
-            merged_hair,
-            merged_cloth,
-            merged_acc,
-            merged_posture,
-            merged_face,
-            merged_other,
-            session_id,
-            character_name
+            merged_hair, merged_cloth, merged_acc,
+            merged_posture, merged_face, merged_other,
+            session_id, character_name
         ))
         conn.commit()
         conn.close()
 
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
+        # appearance_history
+        conn2 = self._ensure_connection()
+        c2 = conn2.cursor()
+        c2.execute('''
             INSERT INTO appearance_history (
                 session_id, character_name,
                 hair, clothing, accessories_and_held_items,
@@ -679,48 +564,80 @@ class DBManager:
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            session_id,
-            character_name,
-            merged_hair,
-            merged_cloth,
-            merged_acc,
-            merged_posture,
-            merged_face,
-            merged_other,
-            triggered_by_message_id
-        ))
-        conn.commit()
-        conn.close()
-
+            session_id, character_name,
+            merged_hair, merged_cloth, merged_acc, merged_posture, merged_face, merged_other, triggered_by_message_id )) 
+        conn2.commit()
+        conn2.close()
         return True
-
+    
     def get_characters_appearance_except_one(self, session_id: str, exclude_character: str) -> Dict[str, str]:
-        """
-        Retrieve a dictionary of appearances for all characters except the one specified.
-        """
         all_aps = self.get_all_character_appearances(session_id)
         return {name: ap for name, ap in all_aps.items() if name != exclude_character}
-    
+
     def get_character_names(self, session_id: str) -> List[str]:
-        """
-        Retrieve a list of all characters.
-        """
+        """Retrieve a list of all characters in the session."""
         conn = self._ensure_connection()
         c = conn.cursor()
-        c.execute('SELECT character_name FROM session_characters WHERE session_id = ?', (session_id,))
+        c.execute('SELECT character_name FROM session_characters WHERE session_id=?', (session_id,))
         rows = c.fetchall()
         conn.close()
         return [row[0] for row in rows]
 
+    # ----------------------------------------------------------------
+    # Character metadata queries (new table)
+    # ----------------------------------------------------------------
+
+    def save_character_metadata(self, session_id: str, character_name: str, meta: CharacterMetadata):
+        """
+        Insert or update the character's metadata record: is_npc, role, etc.
+        """
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO character_metadata (session_id, character_name, is_npc, role)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id, character_name) 
+            DO UPDATE SET is_npc=excluded.is_npc, role=excluded.role
+        ''', (
+            session_id,
+            character_name,
+            1 if meta.is_npc else 0,
+            meta.role
+        ))
+        conn.commit()
+        conn.close()
+
+    def get_character_metadata(self, session_id: str, character_name: str) -> Optional[CharacterMetadata]:
+        """
+        Retrieve the character’s metadata. Returns None if no record found.
+        """
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT is_npc, role
+            FROM character_metadata
+            WHERE session_id=? AND character_name=?
+        ''', (session_id, character_name))
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            return None
+        is_npc_val = bool(row[0])
+        role_val = row[1] or ""
+        return CharacterMetadata(is_npc=is_npc_val, role=role_val)
+
+    # ----------------------------------------------------------------
     # Messages
+    # ----------------------------------------------------------------
+
     def save_message(self,
-                     session_id: str,
-                     sender: str,
-                     message: str,
-                     visible: int,
-                     message_type: str,
-                     emotion: Optional[str],
-                     thoughts: Optional[str]):
+                    session_id: str,
+                    sender: str,
+                    message: str,
+                    visible: int,
+                    message_type: str,
+                    emotion: Optional[str],
+                    thoughts: Optional[str]) -> int:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
@@ -743,119 +660,63 @@ class DBManager:
         return message_id
 
     def add_message_visibility_for_session_characters(self, session_id: str, message_id: int):
-        # Register visibility for all session characters and NPCs for the given message.
+        """
+        For every character in the session, record a row in message_visibility marking
+        this new message as visible=1 for them.
+        """
         chars = self.get_session_characters(session_id)
         conn = self._ensure_connection()
         c = conn.cursor()
         for char in chars:
             c.execute('''
                 INSERT INTO message_visibility (session_id, character_name, message_id, visible)
-                VALUES (?, ?, ?, ?)
-            ''', (session_id, char, message_id, 1))
-        all_npcs = self.get_all_npcs_in_session(session_id)
-        for npc in all_npcs:
-            c.execute('''
-                INSERT INTO npc_message_visibility (session_id, npc_name, message_id, visible)
-                VALUES (?, ?, ?, ?)
-            ''', (session_id, npc, message_id, 1))
+                VALUES (?, ?, ?, 1)
+            ''', (session_id, char, message_id))
         conn.commit()
         conn.close()
 
-
-    def hide_messages_for_npc(self, session_id: str, npc_name: str, message_ids: List[int]):
-        if not message_ids:
-            return
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        placeholders = ",".join("?" * len(message_ids))
-        params = [session_id, npc_name] + message_ids
-        c.execute(f'''
-            UPDATE npc_message_visibility
-            SET visible = 0
-            WHERE session_id = ?
-            AND npc_name = ?
-            AND message_id IN ({placeholders})
-        ''', params)
-        conn.commit()
-        conn.close()
-
-
-    def save_new_npc_summary(self, session_id: str, npc_name: str, summary: str, covered_up_to_message_id: int):
+    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            INSERT INTO npc_summaries (session_id, npc_name, summary, covered_up_to_message_id)
-            VALUES (?, ?, ?, ?)
-        ''', (session_id, npc_name, summary, covered_up_to_message_id))
-        conn.commit()
-        conn.close()
-
-
-    def get_all_npc_summaries(self, session_id: str, npc_name: str) -> List[str]:
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            SELECT summary FROM npc_summaries
-            WHERE session_id = ? AND npc_name = ?
+            SELECT id, sender, message, visible, message_type, emotion, thoughts, created_at
+            FROM messages
+            WHERE session_id=?
             ORDER BY id ASC
-        ''', (session_id, npc_name))
+        ''', (session_id,))
         rows = c.fetchall()
         conn.close()
-        return [r[0] for r in rows]
 
-
-    def get_all_npc_summaries_records(self, session_id: str, npc_name: str) -> List[Dict[str, Any]]:
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            SELECT id, summary, covered_up_to_message_id
-            FROM npc_summaries
-            WHERE session_id = ? AND npc_name = ?
-            ORDER BY id ASC
-        ''', (session_id, npc_name))
-        rows = c.fetchall()
-        conn.close()
-        out = []
+        messages = []
         for row in rows:
-            out.append({
+            messages.append({
                 'id': row[0],
-                'summary': row[1],
-                'covered_up_to_message_id': row[2] if row[2] else 0
+                'sender': row[1],
+                'message': row[2],
+                'visible': bool(row[3]),
+                'message_type': row[4],
+                'emotion': row[5],
+                'thoughts': row[6],
+                'created_at': row[7]
             })
-        return out
-
-
-    def delete_npc_summaries_by_ids(self, session_id: str, npc_name: str, summary_ids: List[int]):
-        if not summary_ids:
-            return
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        placeholders = ",".join("?" * len(summary_ids))
-        params = [session_id, npc_name] + summary_ids
-        c.execute(f'''
-            DELETE FROM npc_summaries
-            WHERE session_id = ?
-            AND npc_name = ?
-            AND id IN ({placeholders})
-        ''', params)
-        conn.commit()
-        conn.close()
+        return messages
 
     def get_visible_messages_for_character(self, session_id: str, character_name: str) -> List[Dict[str, Any]]:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             SELECT m.id, m.sender, m.message, mv.visible, m.message_type,
-                   m.emotion, m.thoughts, m.created_at
+                m.emotion, m.thoughts, m.created_at
             FROM messages m
             JOIN message_visibility mv ON m.id = mv.message_id
-            WHERE mv.session_id = ?
-              AND mv.character_name = ?
-              AND mv.visible = 1
+            WHERE mv.session_id=?
+            AND mv.character_name=?
+            AND mv.visible=1
             ORDER BY m.id ASC
         ''', (session_id, character_name))
         rows = c.fetchall()
         conn.close()
+
         messages = []
         for row in rows:
             messages.append({
@@ -879,42 +740,16 @@ class DBManager:
         params = [session_id, character_name] + message_ids
         c.execute(f'''
             UPDATE message_visibility
-            SET visible = 0
-            WHERE session_id = ?
-              AND character_name = ?
-              AND message_id IN ({placeholders})
+            SET visible=0
+            WHERE session_id=? AND character_name=? AND message_id IN ({placeholders})
         ''', params)
         conn.commit()
         conn.close()
 
-    def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        conn = self._ensure_connection()
-        c = conn.cursor()
-        c.execute('''
-            SELECT 
-                id, sender, message, visible, message_type,
-                emotion, thoughts, created_at
-            FROM messages
-            WHERE session_id = ?
-            ORDER BY id ASC
-        ''', (session_id,))
-        rows = c.fetchall()
-        messages = []
-        for row in rows:
-            messages.append({
-                'id': row[0],
-                'sender': row[1],
-                'message': row[2],
-                'visible': bool(row[3]),
-                'message_type': row[4],
-                'emotion': row[5],
-                'thoughts': row[6],
-                'created_at': row[7],
-            })
-        conn.close()
-        return messages
-
+    # ----------------------------------------------------------------
     # Summaries
+    # ----------------------------------------------------------------
+
     def save_new_summary(self, session_id: str, character_name: str, summary: str, covered_up_to_message_id: int):
         conn = self._ensure_connection()
         c = conn.cursor()
@@ -931,13 +766,13 @@ class DBManager:
         if character_name:
             c.execute('''
                 SELECT summary FROM summaries
-                WHERE session_id = ? AND character_name = ?
+                WHERE session_id=? AND character_name=?
                 ORDER BY id ASC
             ''', (session_id, character_name))
         else:
             c.execute('''
                 SELECT summary FROM summaries
-                WHERE session_id = ?
+                WHERE session_id=?
                 ORDER BY id ASC
             ''', (session_id,))
         rows = c.fetchall()
@@ -950,11 +785,12 @@ class DBManager:
         c.execute('''
             SELECT id, summary, covered_up_to_message_id
             FROM summaries
-            WHERE session_id = ? AND character_name = ?
+            WHERE session_id=? AND character_name=?
             ORDER BY id ASC
         ''', (session_id, character_name))
         rows = c.fetchall()
         conn.close()
+
         results = []
         for row in rows:
             results.append({
@@ -973,9 +809,7 @@ class DBManager:
         params = [session_id, character_name] + summary_ids
         c.execute(f'''
             DELETE FROM summaries
-            WHERE session_id = ?
-              AND character_name = ?
-              AND id IN ({placeholders})
+            WHERE session_id=? AND character_name=? AND id IN ({placeholders})
         ''', params)
         conn.commit()
         conn.close()
@@ -984,8 +818,9 @@ class DBManager:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            SELECT covered_up_to_message_id FROM summaries
-            WHERE session_id = ? AND character_name = ?
+            SELECT covered_up_to_message_id
+            FROM summaries
+            WHERE session_id=? AND character_name=?
             ORDER BY covered_up_to_message_id DESC
             LIMIT 1
         ''', (session_id, character_name))
@@ -995,14 +830,17 @@ class DBManager:
             return row[0]
         return 0
 
-    # Character Prompts
+    # ----------------------------------------------------------------
+    # Character prompts
+    # ----------------------------------------------------------------
+
     def get_character_prompts(self, session_id: str, character_name: str) -> Optional[Dict[str, str]]:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             SELECT character_system_prompt, dynamic_prompt_template
             FROM character_prompts
-            WHERE session_id = ? AND character_name = ?
+            WHERE session_id=? AND character_name=?
         ''', (session_id, character_name))
         row = c.fetchone()
         conn.close()
@@ -1013,7 +851,9 @@ class DBManager:
             }
         return None
 
-    def save_character_prompts(self, session_id: str, character_name: str, character_system_prompt: str, dynamic_prompt_template: str):
+    def save_character_prompts(self, session_id: str, character_name: str,
+                            character_system_prompt: str,
+                            dynamic_prompt_template: str):
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
@@ -1021,19 +861,22 @@ class DBManager:
             VALUES (?, ?, ?, ?)
             ON CONFLICT(session_id, character_name)
             DO UPDATE SET character_system_prompt=excluded.character_system_prompt,
-                          dynamic_prompt_template=excluded.dynamic_prompt_template
+                        dynamic_prompt_template=excluded.dynamic_prompt_template
         ''', (session_id, character_name, character_system_prompt, dynamic_prompt_template))
         conn.commit()
         conn.close()
 
-    # Character Plans
+    # ----------------------------------------------------------------
+    # Character plans
+    # ----------------------------------------------------------------
+
     def get_character_plan(self, session_id: str, character_name: str) -> Optional[Dict[str, Any]]:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             SELECT goal, steps, updated_at, why_new_plan_goal
             FROM character_plans
-            WHERE session_id = ? AND character_name = ?
+            WHERE session_id=? AND character_name=?
         ''', (session_id, character_name))
         row = c.fetchone()
         conn.close()
@@ -1041,22 +884,23 @@ class DBManager:
             goal_str = row[0] or ""
             steps_str = row[1] or ""
             updated_at = row[2]
-            why_new_plan = row[3] or ""
+            why_new = row[3] or ""
             steps_list = []
             if steps_str:
                 try:
                     steps_list = json.loads(steps_str)
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse steps as JSON: {steps_str}")
+                except:
+                    logger.warning(f"Failed to parse steps JSON for {character_name}.")
             return {
                 'goal': goal_str,
                 'steps': steps_list,
                 'updated_at': updated_at,
-                'why_new_plan_goal': why_new_plan
+                'why_new_plan_goal': why_new
             }
         return None
 
-    def save_character_plan(self, session_id: str, character_name: str, goal: str, steps: List[str], why_new_plan_goal: str):
+    def save_character_plan(self, session_id: str, character_name: str,
+                            goal: str, steps: List[str], why_new_plan_goal: str):
         steps_str = json.dumps(steps)
         conn = self._ensure_connection()
         c = conn.cursor()
@@ -1065,39 +909,40 @@ class DBManager:
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(session_id, character_name)
             DO UPDATE SET goal=excluded.goal,
-                          steps=excluded.steps,
-                          why_new_plan_goal=excluded.why_new_plan_goal,
-                          updated_at=CURRENT_TIMESTAMP
+                        steps=excluded.steps,
+                        why_new_plan_goal=excluded.why_new_plan_goal,
+                        updated_at=CURRENT_TIMESTAMP
         ''', (session_id, character_name, goal, steps_str, why_new_plan_goal))
         conn.commit()
         conn.close()
 
-    def save_character_plan_with_history(
-        self,
-        session_id: str,
-        character_name: str,
-        goal: str,
-        steps: List[str],
-        why_new_plan_goal: str,
-        triggered_by_message_id: Optional[int],
-        change_summary: str
-    ):
+    def save_character_plan_with_history(self,
+                                        session_id: str,
+                                        character_name: str,
+                                        goal: str,
+                                        steps: List[str],
+                                        why_new_plan_goal: str,
+                                        triggered_by_message_id: Optional[int],
+                                        change_summary: str):
         steps_str = json.dumps(steps)
         conn = self._ensure_connection()
         c = conn.cursor()
+        # main plan row
         c.execute('''
             INSERT INTO character_plans (session_id, character_name, goal, steps, why_new_plan_goal)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(session_id, character_name)
             DO UPDATE SET goal=excluded.goal,
-                          steps=excluded.steps,
-                          why_new_plan_goal=excluded.why_new_plan_goal,
-                          updated_at=CURRENT_TIMESTAMP
+                        steps=excluded.steps,
+                        why_new_plan_goal=excluded.why_new_plan_goal,
+                        updated_at=CURRENT_TIMESTAMP
         ''', (session_id, character_name, goal, steps_str, why_new_plan_goal))
 
+        # plan history
         c.execute('''
             INSERT INTO character_plans_history (
-                session_id, character_name, goal, steps, triggered_by_message_id, change_summary, why_new_plan_goal
+                session_id, character_name, goal, steps, triggered_by_message_id,
+                change_summary, why_new_plan_goal
             )
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
@@ -1105,29 +950,30 @@ class DBManager:
             character_name,
             goal,
             steps_str,
-            triggered_by_message_id if triggered_by_message_id else None,
+            triggered_by_message_id,
             change_summary,
             why_new_plan_goal
         ))
-
         conn.commit()
         conn.close()
 
-    def get_plan_changes_for_range(self, session_id: str, character_name: str, after_message_id: int, up_to_message_id: int) -> List[Dict[str, Any]]:
+    def get_plan_changes_for_range(self, session_id: str, character_name: str,
+                                after_message_id: int, up_to_message_id: int) -> List[Dict[str, Any]]:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             SELECT triggered_by_message_id, change_summary, why_new_plan_goal
             FROM character_plans_history
-            WHERE session_id = ?
-              AND character_name = ?
-              AND triggered_by_message_id IS NOT NULL
-              AND triggered_by_message_id > ?
-              AND triggered_by_message_id <= ?
+            WHERE session_id=?
+            AND character_name=?
+            AND triggered_by_message_id IS NOT NULL
+            AND triggered_by_message_id>?
+            AND triggered_by_message_id<=?
             ORDER BY id ASC
         ''', (session_id, character_name, after_message_id, up_to_message_id))
         rows = c.fetchall()
         conn.close()
+
         results = []
         for row in rows:
             results.append({
@@ -1137,25 +983,17 @@ class DBManager:
             })
         return results
 
-    #
-    # >>> NEW METHOD to retrieve last known non-empty plan <<<
-    #
     def get_latest_nonempty_plan_in_history(self, session_id: str, character_name: str) -> Optional[Dict[str, Any]]:
-        """
-        Return the most recent plan record in character_plans_history (descending by ID)
-        that has a non-empty goal or non-empty steps. If none found, return None.
-        """
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
             SELECT goal, steps, changed_at, why_new_plan_goal
             FROM character_plans_history
-            WHERE session_id = ? AND character_name = ?
+            WHERE session_id=? AND character_name=?
             ORDER BY id DESC
         ''', (session_id, character_name))
         rows = c.fetchall()
         conn.close()
-
         for row in rows:
             g = row[0] or ""
             s_str = row[1] or ""
@@ -1163,7 +1001,6 @@ class DBManager:
                 s_list = json.loads(s_str)
             except:
                 s_list = []
-            # Check if not entirely empty
             if g.strip() or any(step.strip() for step in s_list):
                 return {
                     'goal': g,
@@ -1172,3 +1009,4 @@ class DBManager:
                     'why_new_plan_goal': row[3] or ""
                 }
         return None
+
