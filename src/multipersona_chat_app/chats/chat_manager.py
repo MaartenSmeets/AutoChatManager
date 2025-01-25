@@ -333,18 +333,14 @@ class ChatManager:
                 self._introduction_given[char_name] = has_introduced
                 logger.debug(f"Initialized introduction status for '{char_name}': {has_introduced}")
 
-    # ----------------------------------------------------------------
-    # NEW HELPER: Ensure turn order resumes from last non-system speaker
-    # ----------------------------------------------------------------
-    def restore_turn_index_from_db(self):  # <-- ADDED
+    def restore_turn_index_from_db(self):
         """
         Finds the last message with message_type in ['character','user'].
-        If found, sets self.current_index so that the NEXT speaker after that one
+        If found, sets self.turn_index so that the NEXT speaker after that one
         is chosen on the next call to proceed_turn().
-        If no such message, keep self.current_index = 0.
+        If no such message, keep self.turn_index = 0.
         """
         messages = self.db.get_messages(self.session_id)
-        # Filter out system or invisible
         valid_msgs = [m for m in messages if m['message_type'] in ('character', 'user') and m['visible'] == 1]
         if not valid_msgs:
             self.turn_index = 0
@@ -354,53 +350,51 @@ class ChatManager:
         last_speaker = last_msg['sender']
         participants = self.get_participants_in_turn_order()
         if last_speaker not in participants:
-            # If last speaker isn't currently a participant, just reset
             self.turn_index = 0
             return
 
-        # e.g. if last speaker has index i among participants, next turn = i+1
         idx = participants.index(last_speaker)
         self.turn_index = (idx + 1) % len(participants)
         logger.info(f"Resuming turn order from DB. Last speaker: {last_speaker}, next index={self.turn_index}.")
 
     async def proceed_turn(self) -> Optional[str]:
+        """
+        Chooses the next speaker in round-robin order, skipping NPCs that 
+        should not speak this turn. Generates that character's message.
+        """
         participants = self.get_participants_in_turn_order()
         if not participants:
             logger.warning("No participants in session; proceed_turn does nothing.")
             return None
 
-        if not hasattr(self, 'current_index'):
-            self.current_index = 0
-
         logger.debug(f"[proceed_turn] Participants in round-robin order: {participants}")
-        logger.debug(f"[proceed_turn] Current round-robin index before picking = {self.current_index}")
+        logger.debug(f"[proceed_turn] Current round-robin index before picking = {self.turn_index}")
 
         chosen_speaker = None
         count_attempts = 0
         while count_attempts < len(participants):
-            c_name = participants[self.current_index]
+            c_name = participants[self.turn_index]
             logger.debug(f"[proceed_turn] Attempting speaker: {c_name}")
 
             meta = self.db.get_character_metadata(self.session_id, c_name)
-            if meta and meta.is_npc:
-                if hasattr(self, 'npc_manager') and self.npc_manager:
-                    npc_should_speak = await self.npc_manager.npc_should_speak(
-                        c_name, self.current_setting_description or ""
-                    )
-                    logger.debug(f"[proceed_turn] NPC '{c_name}' npc_should_speak()={npc_should_speak}")
-                    if not npc_should_speak:
-                        logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_should_speak=False.")
-                        self.current_index = (self.current_index + 1) % len(participants)
-                        count_attempts += 1
-                        continue
-                else:
-                    logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_manager is disabled.")
-                    self.current_index = (self.current_index + 1) % len(participants)
+            if meta and meta.is_npc and self.npc_manager:
+                npc_should_speak = await self.npc_manager.npc_should_speak(
+                    c_name, self.current_setting_description or ""
+                )
+                logger.debug(f"[proceed_turn] NPC '{c_name}' npc_should_speak()={npc_should_speak}")
+                if not npc_should_speak:
+                    logger.debug(f"[proceed_turn] Skipping NPC '{c_name}'.")
+                    self.turn_index = (self.turn_index + 1) % len(participants)
                     count_attempts += 1
                     continue
+            elif meta and meta.is_npc and not self.npc_manager:
+                logger.debug(f"[proceed_turn] Skipping NPC '{c_name}' because npc_manager is disabled.")
+                self.turn_index = (self.turn_index + 1) % len(participants)
+                count_attempts += 1
+                continue
 
             chosen_speaker = c_name
-            self.current_index = (self.current_index + 1) % len(participants)
+            self.turn_index = (self.turn_index + 1) % len(participants)
             break
 
         if not chosen_speaker:
@@ -408,7 +402,6 @@ class ChatManager:
             return None
 
         logger.info(f"[proceed_turn] Chosen speaker: {chosen_speaker}")
-
         was_introduced_before = self._introduction_given.get(chosen_speaker, False)
         await self.generate_character_message(chosen_speaker)
 
@@ -416,26 +409,18 @@ class ChatManager:
             logger.debug(f"[proceed_turn] {chosen_speaker} just introduced themselves. Ending turn.")
             return chosen_speaker
 
-        # Check if all participants are introduced
-        all_introduced = True
-        for participant_name in participants:
-            if not self._introduction_given.get(participant_name, False):
-                all_introduced = False
-                break
-
-        if all_introduced:
-            if hasattr(self, 'npc_manager') and self.npc_manager:
-                all_msgs = self.db.get_messages(self.session_id)
-                recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
-                setting_desc = self.current_setting_description or ""
-                new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
-                if new_npc_name:
-                    logger.info(f"[proceed_turn] A new NPC '{new_npc_name}' was created. They speak immediately!")
-                    self.introduction_counter += 1
-                    self.introduction_sequence[new_npc_name] = self.introduction_counter
-                    await self.generate_character_message(new_npc_name)
-            else:
-                logger.debug("[proceed_turn] Skipping NPC creation; manager disabled.")
+        # If everyone has introduced themselves, optionally try NPC creation:
+        all_introduced = all(self._introduction_given.get(p, False) for p in participants)
+        if all_introduced and self.npc_manager:
+            all_msgs = self.db.get_messages(self.session_id)
+            recent_lines = [f"{m['sender']}: {m['message']}" for m in all_msgs[-5:]]
+            setting_desc = self.current_setting_description or ""
+            new_npc_name = await self.npc_manager.maybe_create_npc(recent_lines, setting_desc)
+            if new_npc_name:
+                logger.info(f"[proceed_turn] A new NPC '{new_npc_name}' was created. They speak immediately!")
+                self.introduction_counter += 1
+                self.introduction_sequence[new_npc_name] = self.introduction_counter
+                await self.generate_character_message(new_npc_name)
 
         return chosen_speaker
 
