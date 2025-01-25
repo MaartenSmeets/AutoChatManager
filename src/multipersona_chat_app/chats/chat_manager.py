@@ -162,15 +162,20 @@ class ChatManager:
 
     def enable_npc_manager(self):
         """
-        Stub for toggling NPC manager on. In this simplified approach, the NPCManager is always active.
+        Actually enable the NPC manager by creating its instance.
         """
-        pass
+        if not self.npc_manager:
+            self.npc_manager = NPCManager(
+                session_id=self.session_id,
+                db=self.db,
+                llm_client=self.llm_client
+            )
 
     def disable_npc_manager(self):
         """
-        Stub for toggling NPC manager off. In this simplified approach, the NPCManager is always active.
+        Actually disable the NPC manager by setting it to None.
         """
-        pass
+        self.npc_manager = None
 
     @property
     def current_location(self) -> Optional[str]:

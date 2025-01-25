@@ -89,15 +89,14 @@ def init_chat_manager(session_id: str, settings: List[Dict]):
     # Register an LLM status callback on chat_manager so it can push messages via push_llm_status(...)
     chat_manager.set_llm_status_callback(push_llm_status)
 
-def toggle_npc_manager(value: bool):
-    if value:
-        chat_manager.npc_manager = NPCManager(
-            session_id=chat_manager.session_id,
-            db=chat_manager.db,
-            llm_client=chat_manager.llm_client
-        )
-    else:
-        chat_manager.npc_manager = None
+def toggle_npc_manager(event):
+    """
+    Called when user flips the 'NPC Manager Active' switch in the UI.
+    """
+    if event.value:  # Switch turned ON
+        chat_manager.enable_npc_manager()
+    else:            # Switch turned OFF
+        chat_manager.disable_npc_manager()
 
 
 def refresh_added_characters():
