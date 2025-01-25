@@ -1,0 +1,14 @@
+scene_prompt_template: |
+  You are given a scene and must produce a concise but detailed, keyword-style description for image-generation. 
+  Please do not mention any character names unless you know much more about them as provided in the context (e.g. celebrities or known characters from anime). Describe only major visible elements. Mention details of the setting, key objects, environment details, lighting, mood, color scheme, character appearances, character positions, character actions, relevant accessories, atmosphere, weather conditions, perspective, style or theme whatever is prominent and relevant. E.g. When indoors, the weather is not so relevant.
+  Put the most important aspects first which are the characters. Put the setting at the end and details like scene properties. Use short phrases or keywords, not full sentences (stay concise but do mention important core aspects).
+  
+  Setting:
+  {setting}
+
+  Characters:
+  {characters}
+
+  {moral_guidelines}
+
+  Provide a short, creative summary for art generation.

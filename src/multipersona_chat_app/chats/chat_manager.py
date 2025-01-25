@@ -7,6 +7,7 @@ from llm.ollama_client import OllamaClient
 from datetime import datetime
 from npc_manager import NPCManager
 import yaml
+from image_manager import ImageManager
 from templates import (
     INTRODUCTION_TEMPLATE,
     CHARACTER_INTRODUCTION_SYSTEM_PROMPT_TEMPLATE,
@@ -131,6 +132,15 @@ class ChatManager:
         self.introduction_counter = 0
         self.introduction_sequence = {}
         self.initialize_introduction_status()
+
+        self.auto_prompt_generation_interval = self.config.get('auto_prompt_generation_interval', 0)
+
+        # Instantiate the ImageManager
+        self.image_manager = ImageManager(
+            config_path=os.path.join("src", "multipersona_chat_app", "config", "image_manager_config.yaml"),
+            llm_client=self.llm_client
+        )
+
 
     @staticmethod
     def load_config(config_path: str) -> dict:
@@ -474,7 +484,71 @@ class ChatManager:
         self.db.add_message_visibility_for_session_characters(self.session_id, message_id)
 
         await self.check_summarization()
+
+        # NEW CODE: Check if we've hit the auto prompt generation threshold
+        if self.auto_prompt_generation_interval > 0:
+            total_messages = len(self.db.get_messages(self.session_id))
+            if total_messages % self.auto_prompt_generation_interval == 0:
+                # Trigger the prompt generation
+                await self.generate_scene_prompt()
+
         return message_id
+
+    async def generate_scene_prompt(self):
+        """
+        Creates a short description of the scene for image generation,
+        calls LLM, and saves the prompt to a timestamped file in 'output/'.
+        """
+        # Gather setting
+        setting_desc = self.db.get_current_setting_description(self.session_id) or ""
+        if not setting_desc.strip() and self.current_setting in self.settings:
+            setting_desc = self.settings[self.current_setting].get('description', '')
+
+        # Gather moral guidelines
+        guidelines = self.moral_guidelines or ""
+
+        # Gather non-NPC character info
+        session_chars = self.db.get_session_characters(self.session_id)
+        char_data = []
+        for char_name in session_chars:
+            meta = self.db.get_character_metadata(self.session_id, char_name)
+            # Skip NPCs
+            if meta and meta.is_npc:
+                continue
+
+            # We want fixed_traits + current appearance + location, no name
+            # If it's a user-chosen PC from YAML, we can fetch them from self.characters
+            traits = ""
+            if char_name in self.characters:
+                traits = self.characters[char_name].fixed_traits
+
+            appearance = self.db.get_character_appearance(self.session_id, char_name)
+            location = self.db.get_character_location(self.session_id, char_name) or ""
+
+            char_data.append({
+                "traits": traits,
+                "appearance": appearance,
+                "location": location,
+            })
+
+        # Call the ImageManager
+        if self.llm_status_callback:
+            await self.llm_status_callback("[ImageManager] Building scene prompt data...")
+
+        prompt_text = await self.image_manager.generate_concise_description(
+            setting=setting_desc,
+            moral_guidelines=guidelines,
+            non_npc_characters=char_data,
+            llm_status_callback=self.llm_status_callback
+        )
+
+        self.image_manager.save_prompt_to_file(prompt_text, output_folder="output")
+
+        if self.llm_status_callback:
+            await self.llm_status_callback(
+                f"[ImageManager] Scene prompt generated and saved.\n\n{prompt_text}"
+            )
+
 
     def start_automatic_chat(self):
         self.automatic_running = True

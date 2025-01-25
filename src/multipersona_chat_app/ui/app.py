@@ -495,6 +495,17 @@ async def update_all_characters_info():
     show_chat_display.refresh()
     show_character_details.refresh()
 
+async def generate_scene_prompt_async():
+    """
+    Trigger a manual generation of the concise scene/character description 
+    for image generation, showing LLM status in real-time.
+    """
+    if not chat_manager:
+        ui.notify("ChatManager not initialized.", type='warning')
+        return
+    await chat_manager.generate_scene_prompt()
+    show_chat_display.refresh()
+    show_character_details.refresh()
 
 async def consume_llm_status():
     while not llm_status_queue.empty():
@@ -612,6 +623,12 @@ def main_page():
                 on_click=lambda: asyncio.create_task(update_all_characters_info()),
                 icon='sync'
             ).props('outline').classes('mt-2 w-full') # Full width button, more descriptive text
+
+            ui.button(
+                "Generate Scene Prompt",
+                on_click=lambda: asyncio.create_task(generate_scene_prompt_async()),
+                icon='image'
+            ).props('outline').classes('w-full')
 
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600 mt-2')

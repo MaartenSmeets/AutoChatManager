@@ -5,3 +5,4 @@ similarity_threshold: 0.85
 summary_of_summaries_count: 3
 max_similarity_retries: 3
 forced_update_interval: 5
+auto_prompt_generation_interval: 5

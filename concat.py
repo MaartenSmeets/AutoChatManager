@@ -11,7 +11,7 @@ def concatenate_files(output_file, root_dir, target_files=None, exclude_dirs=Non
     """
     # Default list of target files if not provided
     if target_files is None:
-        target_files = ['npc_manager.py', 'chat_manager.py', 'app.py']
+        target_files = ['npc_manager.py', 'chat_manager.py', 'app.py', 'image_manager.py']
 
     if exclude_dirs is None:
         exclude_dirs = ['__pycache__', '.git', '.venv', 'build', 'dist', '.idea', '.vscode']
