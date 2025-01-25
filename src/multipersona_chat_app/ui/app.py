@@ -13,9 +13,7 @@ from models.character import Character
 from chats.chat_manager import ChatManager
 from utils import load_settings, get_available_characters, remove_markdown
 from templates import (
-    CharacterIntroductionOutput,
-    INTRODUCTION_TEMPLATE,
-    CHARACTER_INTRODUCTION_SYSTEM_PROMPT_TEMPLATE
+    CharacterIntroductionOutput
 )
 
 logger = logging.getLogger(__name__)
@@ -94,8 +92,10 @@ def toggle_npc_manager(event):
     Called when user flips the 'NPC Manager Active' switch in the UI.
     """
     if event.value:  # Switch turned ON
+        logger.info("NPC Manager enabled.")
         chat_manager.enable_npc_manager()
     else:            # Switch turned OFF
+        logger.info("NPC Manager disabled.")
         chat_manager.disable_npc_manager()
 
 
