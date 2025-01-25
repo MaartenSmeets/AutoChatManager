@@ -287,7 +287,7 @@ def load_session(session_id: str):
         chat_manager.set_current_setting(
             setting['name'],
             stored_description if stored_description.strip() else setting['description'],
-            setting['start_location']
+            stored_start_location
         )
         settings_dropdown.value = setting['name']
     else:
@@ -328,6 +328,11 @@ def load_session(session_id: str):
         if c_name in ALL_CHARACTERS:
             chat_manager.add_character(c_name, ALL_CHARACTERS[c_name])
 
+    # ------------------------------------------------------------------------
+    # Restore turn index from the DB's last speaker so we resume logically
+    chat_manager.restore_turn_index_from_db()  # <-- ADDED
+    # ------------------------------------------------------------------------
+
     refresh_added_characters()
     show_chat_display.refresh()
     show_character_details.refresh()
@@ -337,10 +342,9 @@ def load_session(session_id: str):
     has_msgs = len(chat_msgs) > 0
     settings_dropdown.disabled = has_msgs
     settings_dropdown.update()
-    settings_expansion.value = has_msgs # Collapse settings after session start
+    settings_expansion.value = has_msgs  # Collapse settings after session start
 
     is_session_being_loaded = False
-
 
 def select_setting(event):
     if is_session_being_loaded:
