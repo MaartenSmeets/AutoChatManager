@@ -1,4 +1,3 @@
-# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/image_manager.py
 import os
 import asyncio
 import yaml
@@ -19,23 +18,27 @@ class ImagePrompt(BaseModel):
 class ImageManager:
     """
     Handles the creation of a concise, keyword-style scene description 
-    suitable for image generation prompts, now using structured LLM output.
+    suitable for image generation prompts, using structured LLM output
+    with separate system and user prompts.
     """
 
     def __init__(self, config_path: str, llm_client: OllamaClient):
         self.config_path = config_path
         self.llm_client = llm_client
-        self.template = ""
+        self.system_prompt = ""
+        self.user_prompt_template = ""
         self._load_config()
 
     def _load_config(self):
         try:
             with open(self.config_path, 'r') as f:
                 data = yaml.safe_load(f)
-            self.template = data.get('scene_prompt_template', '')
+            self.system_prompt = data.get('system_prompt', '')
+            self.user_prompt_template = data.get('user_prompt_template', '')
         except Exception as e:
             logger.error(f"Failed to load image_manager_config from {self.config_path}: {e}")
-            self.template = ""
+            self.system_prompt = ""
+            self.user_prompt_template = ""
 
     async def generate_concise_description(
         self,
@@ -57,16 +60,15 @@ class ImageManager:
             }
           Names are excluded to keep them anonymous.
         """
-        if not self.template.strip():
-            logger.warning("No scene_prompt_template found; returning empty description.")
+        if not self.user_prompt_template.strip():
+            logger.warning("No user_prompt_template found; returning empty description.")
             return "No template available."
 
-        # Build a short bullet for each character
         character_lines = []
         for char_info in non_npc_characters:
-            location_part = (char_info['location'] or "").strip()
-            traits_part = (char_info['traits'] or "").strip()
-            appearance_part = (char_info['appearance'] or "").strip()
+            location_part = (char_info.get('location') or "").strip()
+            traits_part = (char_info.get('traits') or "").strip()
+            appearance_part = (char_info.get('appearance') or "").strip()
 
             merged = []
             if location_part:
@@ -81,11 +83,11 @@ class ImageManager:
 
         characters_text = "\n".join(character_lines)
 
-        # Fill the template
+        # Fill in the user prompt template
         final_prompt = (
-            self.template
-            .replace("{setting}", setting)
+            self.user_prompt_template
             .replace("{characters}", characters_text)
+            .replace("{setting}", setting)
             .replace("{moral_guidelines}", moral_guidelines)
         )
 
@@ -100,20 +102,18 @@ class ImageManager:
         if llm_status_callback:
             await llm_status_callback("[LLM] Generating concise scene description (structured output)...")
 
-        # Call the LLM
+        # Call the LLM with the updated system prompt
         result_obj = await asyncio.to_thread(
             llm.generate,
             prompt=final_prompt,
-            system="",     # System prompt left blank here, but can be set if needed
+            system=self.system_prompt,
             use_cache=False
         )
 
-        # Parse the structured output
         if not result_obj or not isinstance(result_obj, ImagePrompt):
             logger.warning("No valid structured output received for image prompt. Falling back.")
             return "No scene description generated."
-        
-        # Return the LLM-generated short prompt
+
         return result_obj.short_prompt.strip('\"\'').replace('\n', '')
 
     def save_prompt_to_file(self, prompt_text: str, output_folder: str = "output"):
