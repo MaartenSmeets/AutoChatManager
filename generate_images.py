@@ -35,7 +35,7 @@ CONFIG_SEED = -1
 
 # Directory and file filter for prompts
 CONFIG_PROMPTS_DIR = "output"    # Directory containing prompt files
-CONFIG_PROMPT_FILTER = "*.txt"   # File filter for prompt files
+CONFIG_PROMPT_FILTER = "*scene_prompt.txt"   # File filter for prompt files
 
 # For logging / tracking
 CONFIG_CLIENT_ID = str(uuid.uuid4())
