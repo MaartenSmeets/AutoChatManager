@@ -991,6 +991,8 @@ class ChatManager:
             if isinstance(introduction_response, CharacterIntroductionOutput):
                 intro_text = introduction_response.introduction_text.strip()
                 app_seg = introduction_response.current_appearance
+                cur_loc = introduction_response.current_location
+                
 
                 msg_id = await self.add_message(
                     character_name,
@@ -1015,6 +1017,7 @@ class ChatManager:
                     new_app_segments,
                     triggered_message_id
                 )
+                self.db.update_character_location(self.session_id, character_name, cur_loc, triggered_message_id)
                 logger.info(f"Saved introduction message for {character_name}.")
                 if self.llm_status_callback:
                     await self.llm_status_callback(
