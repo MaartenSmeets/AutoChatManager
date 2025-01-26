@@ -489,6 +489,7 @@ class ChatManager:
                 "traits": traits,
                 "appearance": appearance,
                 "location": location,
+                "name": char_name
             })
 
         if self.llm_status_callback:

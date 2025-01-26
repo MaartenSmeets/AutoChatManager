@@ -73,6 +73,7 @@ class ImageManager:
               'traits': str,
               'appearance': str,
               'location': str,
+              'name': str
             }
           Names are excluded to keep them anonymous.
         """
@@ -83,7 +84,7 @@ class ImageManager:
         # More explicit and nicely formatted character data
         characters_list = []
         for i, char_info in enumerate(non_npc_characters, start=1):
-            lines = [f"Character {i}:"]
+            lines = [f"Character {char_info.get('name', 'Unknown')}:"]
             location = (char_info.get('location') or "").strip()
             traits = (char_info.get('traits') or "").strip()
             appearance = (char_info.get('appearance') or "").strip()
