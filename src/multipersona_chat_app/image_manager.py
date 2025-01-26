@@ -80,25 +80,24 @@ class ImageManager:
             logger.warning("No user_prompt_template found; returning empty description.")
             return "No template available."
 
-        # Build a minimal bullet list from character data
-        character_lines = []
-        for char_info in non_npc_characters:
-            location_part = (char_info.get('location') or "").strip()
-            traits_part = (char_info.get('traits') or "").strip()
-            appearance_part = (char_info.get('appearance') or "").strip()
+        # More explicit and nicely formatted character data
+        characters_list = []
+        for i, char_info in enumerate(non_npc_characters, start=1):
+            lines = [f"Character {i}:"]
+            location = (char_info.get('location') or "").strip()
+            traits = (char_info.get('traits') or "").strip()
+            appearance = (char_info.get('appearance') or "").strip()
 
-            merged = []
-            if location_part:
-                merged.append(location_part)
-            if traits_part:
-                merged.append(traits_part)
-            if appearance_part:
-                merged.append(appearance_part)
+            if location:
+                lines.append(f"- Location: {location}")
+            if traits:
+                lines.append(f"- Traits: {traits}")
+            if appearance:
+                lines.append(f"- Appearance: {appearance}")
 
-            bullet_line = "- " + "; ".join(merged)
-            character_lines.append(bullet_line)
+            characters_list.append("\n".join(lines))
 
-        characters_text = "\n".join(character_lines)
+        characters_text = "\n\n".join(characters_list)
 
         # Fill in the user prompt template
         final_prompt = (
