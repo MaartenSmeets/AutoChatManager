@@ -1,3 +1,4 @@
+# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/image_manager.py
 import os
 import asyncio
 import yaml
@@ -27,18 +28,28 @@ class ImageManager:
         self.llm_client = llm_client
         self.system_prompt = ""
         self.user_prompt_template = ""
+        self.max_concise_retries = 0
         self._load_config()
 
     def _load_config(self):
+        """
+        Loads configuration from image_manager_config.yaml.
+        Expects an optional integer 'max_concise_retries' property 
+        that determines how many times to retry making the output 
+        concise if over 150 words.
+        """
         try:
             with open(self.config_path, 'r') as f:
                 data = yaml.safe_load(f)
             self.system_prompt = data.get('system_prompt', '')
             self.user_prompt_template = data.get('user_prompt_template', '')
+            # New property to configure how many times to retry if prompt is too long:
+            self.max_concise_retries = data.get('max_concise_retries', 2)
         except Exception as e:
             logger.error(f"Failed to load image_manager_config from {self.config_path}: {e}")
             self.system_prompt = ""
             self.user_prompt_template = ""
+            self.max_concise_retries = 2
 
     async def generate_concise_description(
         self,
@@ -59,6 +70,8 @@ class ImageManager:
               'location': str,
             }
           Names are excluded to keep them anonymous.
+        :param llm_status_callback: optional async callback for status updates
+        :return: short prompt text (potentially re-requested from the LLM if too long)
         """
         if not self.user_prompt_template.strip():
             logger.warning("No user_prompt_template found; returning empty description.")
@@ -112,9 +125,81 @@ class ImageManager:
 
         if not result_obj or not isinstance(result_obj, ImagePrompt):
             logger.warning("No valid structured output received for image prompt. Falling back.")
-            return "No scene description generated."
+            short_prompt = "No scene description generated."
+        else:
+            short_prompt = result_obj.short_prompt.strip('\"\'').replace('\n', '')
+
+        # Possibly reduce prompt if it's over the word limit
+        short_prompt = await self._enforce_concise(short_prompt, llm_status_callback)
+
+        return short_prompt
+
+    async def _enforce_concise(self, text: str, llm_status_callback=None) -> str:
+        """
+        If the text is over 150 words, re-requests a concise version from the LLM
+        up to self.max_concise_retries times.
+        """
+        word_limit = 150
+        tries = 0
+        while self._word_count(text) > word_limit and tries < self.max_concise_retries:
+            tries += 1
+            if llm_status_callback:
+                await llm_status_callback(
+                    f"[ImageManager] Prompt text exceeds {word_limit} words. Retrying to make it more concise (attempt {tries})."
+                )
+
+            # Attempt to reduce the text
+            new_text = await self._reduce_text(text)
+            if new_text.strip():
+                text = new_text.strip()
+            else:
+                # If we fail to get anything valid back, break to avoid empty looping
+                break
+
+        return text
+
+    async def _reduce_text(self, text: str) -> str:
+        """
+        Requests the LLM to produce a shorter version of 'text' with fewer than 150 words,
+        returning the same structured JSON with the 'short_prompt' field.
+        """
+        # We'll build a quick system prompt:
+        system_prompt = (
+            "You are an assistant that outputs a JSON with one field 'short_prompt'. "
+            "The user has provided a text that is too long. Please reduce it to fewer than 150 words, "
+            "preserving the main descriptive content. Keep the same JSON schema: { short_prompt: str }. "
+        )
+        # This user prompt includes the text we want to shorten.
+        user_prompt = (
+            f"Original text:\n\n{text}\n\n"
+            "Rewrite this so it is under 150 words, maintaining the main ideas. Return valid JSON with a 'short_prompt' field."
+        )
+
+        reduce_llm = OllamaClient(
+            'src/multipersona_chat_app/config/llm_config.yaml',
+            output_model=ImagePrompt
+        )
+        if self.llm_client.user_selected_model:
+            reduce_llm.set_user_selected_model(self.llm_client.user_selected_model)
+
+        result_obj = await asyncio.to_thread(
+            reduce_llm.generate,
+            prompt=user_prompt,
+            system=system_prompt,
+            use_cache=False
+        )
+
+        if not result_obj or not isinstance(result_obj, ImagePrompt):
+            logger.warning("Failed to get a valid concise output from the LLM. Returning original text.")
+            return text
 
         return result_obj.short_prompt.strip('\"\'').replace('\n', '')
+
+    def _word_count(self, text: str) -> int:
+        """
+        Simple helper to count words in a string.
+        """
+        return len(text.split())
 
     def save_prompt_to_file(self, prompt_text: str, output_folder: str = "output"):
         """
