@@ -198,13 +198,11 @@ class ImageManager:
             if self.llm_client.user_selected_model:
                 llm.set_user_selected_model(self.llm_client.user_selected_model)
 
-            # System prompt & user prompt for the conciseness request
-            system_prompt = (
-                "You are an assistant rewriting a prompt to be shorter. "
-                "Return the final text in the 'short_prompt' field, with minimal words (under 150)."
-            )
+            system_prompt = r"""You are an expert at condensing image generation prompts. Remove non-visual elements that don't contribute to image quality (like sounds and smells), but retain atmospheric elements that enhance visual generation like textures, mood, and artistic style. Preserve essential visual elements, style descriptors, and composition details while removing redundant phrases and unnecessary modifiers. Maintain the original artistic intent but with fewer words. Return the result as JSON in this format: {"short_prompt": "<condensed version emphasizing visual elements, mood, composition, textures, and style that enhance image generation>"} Note: Fields enclosed in angle brackets (<...>) are placeholders. When generating output, do not include the angle brackets. Replace the placeholder text with detailed content that fits the context."""
+
+            # User prompt template
             user_prompt = (
-                "Rewrite this text to be under 150 words, preserving overall meaning:\n\n"
+                "Condense this image generation prompt while preserving key visual elements and style:\n\n"
                 f"{current_text}"
             )
 

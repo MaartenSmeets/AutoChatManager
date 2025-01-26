@@ -8,7 +8,7 @@ user_prompt_template: |
   - Use precise, evocative language that is descriptive but concise
   - Avoid redundancy or unnecessary details that do not enhance the visual focus
   - Exclude specific character names unless they belong to widely recognized figures, such as famous artists, well-known movie characters, anime icons, or historical personalities
-  - Clearly separate ideas using commas or periods for improved readability
+  - Clearly separate distinct components or elements using commas or periods for improved readability
   - Include descriptions of mood, lighting, atmosphere, and color schemes
   - Highlight characters' actions, positions, expressions, and relevant accessories
   - Ensure the prompt emphasizes the most visually compelling aspects of the scene, balancing richness with brevity
@@ -22,6 +22,6 @@ user_prompt_template: |
   Moral Guidelines: 
   {moral_guidelines}
 
-  Generate a concise, creative prompt designed to maximize artistic potential and visual appeal, focusing on the scene's most evocative and visually striking elements, while adhering to the provided guidelines.
+  Generate a concise, creative prompt designed to maximize artistic potential and visual appeal, focusing on the scene's most evocative and visually striking elements, while adhering to the provided guidelines. Remember to only use names for characters about which you know more than the provided context, for example celebreties or characters in anime. In case you do not name characters, describe how they look and what they are.
 
 max_concise_retries: 3
