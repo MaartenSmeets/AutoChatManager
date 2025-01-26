@@ -1,10 +1,10 @@
-# File: /home/maarten/AutoChatManager/src/multipersona_chat_app/image_manager.py
 import os
 import asyncio
 import yaml
 from datetime import datetime
 import logging
 from pydantic import BaseModel
+from typing import Optional
 
 from llm.ollama_client import OllamaClient
 
@@ -21,6 +21,12 @@ class ImageManager:
     Handles the creation of a concise, keyword-style scene description 
     suitable for image generation prompts, using structured LLM output
     with separate system and user prompts.
+
+    Additionally:
+      - Saves system, user, and LLM-generated prompts to text files.
+      - Checks if the final LLM output exceeds a word limit (150 words), and if so, 
+        attempts to regenerate a more concise version up to a configurable number 
+        of retries (loaded from image_manager_config.yaml as 'max_concise_retries').
     """
 
     def __init__(self, config_path: str, llm_client: OllamaClient):
@@ -28,28 +34,27 @@ class ImageManager:
         self.llm_client = llm_client
         self.system_prompt = ""
         self.user_prompt_template = ""
-        self.max_concise_retries = 0
+        self.max_concise_retries = 3  # default if not specified in YAML
         self._load_config()
 
     def _load_config(self):
         """
-        Loads configuration from image_manager_config.yaml.
-        Expects an optional integer 'max_concise_retries' property 
-        that determines how many times to retry making the output 
-        concise if over 150 words.
+        Loads configuration from the YAML file. Expected to include:
+          - system_prompt
+          - user_prompt_template
+          - max_concise_retries (optional)
         """
         try:
             with open(self.config_path, 'r') as f:
                 data = yaml.safe_load(f)
             self.system_prompt = data.get('system_prompt', '')
             self.user_prompt_template = data.get('user_prompt_template', '')
-            # New property to configure how many times to retry if prompt is too long:
-            self.max_concise_retries = data.get('max_concise_retries', 2)
+            self.max_concise_retries = data.get('max_concise_retries', 3)
         except Exception as e:
             logger.error(f"Failed to load image_manager_config from {self.config_path}: {e}")
             self.system_prompt = ""
             self.user_prompt_template = ""
-            self.max_concise_retries = 2
+            self.max_concise_retries = 3
 
     async def generate_concise_description(
         self,
@@ -70,13 +75,12 @@ class ImageManager:
               'location': str,
             }
           Names are excluded to keep them anonymous.
-        :param llm_status_callback: optional async callback for status updates
-        :return: short prompt text (potentially re-requested from the LLM if too long)
         """
         if not self.user_prompt_template.strip():
             logger.warning("No user_prompt_template found; returning empty description.")
             return "No template available."
 
+        # Build a minimal bullet list from character data
         character_lines = []
         for char_info in non_npc_characters:
             location_part = (char_info.get('location') or "").strip()
@@ -104,7 +108,7 @@ class ImageManager:
             .replace("{moral_guidelines}", moral_guidelines)
         )
 
-        # Prepare the LLM client with structured output
+        # Instantiate a local LLM client for structured output
         llm = OllamaClient(
             'src/multipersona_chat_app/config/llm_config.yaml',
             output_model=ImagePrompt
@@ -112,10 +116,15 @@ class ImageManager:
         if self.llm_client.user_selected_model:
             llm.set_user_selected_model(self.llm_client.user_selected_model)
 
+        # Optionally notify status
         if llm_status_callback:
             await llm_status_callback("[LLM] Generating concise scene description (structured output)...")
 
-        # Call the LLM with the updated system prompt
+        # Save the system and user prompts to files before generation
+        self.save_text_to_file(self.system_prompt, "system_prompt")
+        self.save_text_to_file(final_prompt, "user_prompt")
+
+        # Main LLM call
         result_obj = await asyncio.to_thread(
             llm.generate,
             prompt=final_prompt,
@@ -125,85 +134,23 @@ class ImageManager:
 
         if not result_obj or not isinstance(result_obj, ImagePrompt):
             logger.warning("No valid structured output received for image prompt. Falling back.")
-            short_prompt = "No scene description generated."
-        else:
-            short_prompt = result_obj.short_prompt.strip('\"\'').replace('\n', '')
+            return "No scene description generated."
 
-        # Possibly reduce prompt if it's over the word limit
-        short_prompt = await self._enforce_concise(short_prompt, llm_status_callback)
+        # Clean up the final text
+        concise_result = result_obj.short_prompt.strip('\"\'').replace('\n', '')
 
-        return short_prompt
+        # If result is too large, attempt to concisely regenerate
+        concise_result = await self._make_concise_if_needed(concise_result)
 
-    async def _enforce_concise(self, text: str, llm_status_callback=None) -> str:
-        """
-        If the text is over 150 words, re-requests a concise version from the LLM
-        up to self.max_concise_retries times.
-        """
-        word_limit = 150
-        tries = 0
-        while self._word_count(text) > word_limit and tries < self.max_concise_retries:
-            tries += 1
-            if llm_status_callback:
-                await llm_status_callback(
-                    f"[ImageManager] Prompt text exceeds {word_limit} words. Retrying to make it more concise (attempt {tries})."
-                )
+        # Save the final LLM output
+        self.save_text_to_file(concise_result, "llm_output")
 
-            # Attempt to reduce the text
-            new_text = await self._reduce_text(text)
-            if new_text.strip():
-                text = new_text.strip()
-            else:
-                # If we fail to get anything valid back, break to avoid empty looping
-                break
-
-        return text
-
-    async def _reduce_text(self, text: str) -> str:
-        """
-        Requests the LLM to produce a shorter version of 'text' with fewer than 150 words,
-        returning the same structured JSON with the 'short_prompt' field.
-        """
-        # We'll build a quick system prompt:
-        system_prompt = (
-            "You are an assistant that outputs a JSON with one field 'short_prompt'. "
-            "The user has provided a text that is too long. Please reduce it to fewer than 150 words, "
-            "preserving the main descriptive content. Keep the same JSON schema: { short_prompt: str }. "
-        )
-        # This user prompt includes the text we want to shorten.
-        user_prompt = (
-            f"Original text:\n\n{text}\n\n"
-            "Rewrite this so it is under 150 words, maintaining the main ideas. Return valid JSON with a 'short_prompt' field."
-        )
-
-        reduce_llm = OllamaClient(
-            'src/multipersona_chat_app/config/llm_config.yaml',
-            output_model=ImagePrompt
-        )
-        if self.llm_client.user_selected_model:
-            reduce_llm.set_user_selected_model(self.llm_client.user_selected_model)
-
-        result_obj = await asyncio.to_thread(
-            reduce_llm.generate,
-            prompt=user_prompt,
-            system=system_prompt,
-            use_cache=False
-        )
-
-        if not result_obj or not isinstance(result_obj, ImagePrompt):
-            logger.warning("Failed to get a valid concise output from the LLM. Returning original text.")
-            return text
-
-        return result_obj.short_prompt.strip('\"\'').replace('\n', '')
-
-    def _word_count(self, text: str) -> int:
-        """
-        Simple helper to count words in a string.
-        """
-        return len(text.split())
+        return concise_result
 
     def save_prompt_to_file(self, prompt_text: str, output_folder: str = "output"):
         """
         Saves the prompt to the output folder with a timestamp prefix.
+        Legacy method (still used internally if needed).
         """
         os.makedirs(output_folder, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -212,3 +159,74 @@ class ImageManager:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(prompt_text)
         return filepath
+
+    def save_text_to_file(self, text: str, file_prefix: str, output_folder: str = "output") -> str:
+        """
+        Saves arbitrary text to the output folder, using a timestamp plus the provided prefix.
+        """
+        os.makedirs(output_folder, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{file_prefix}.txt"
+        filepath = os.path.join(output_folder, filename)
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception as e:
+            logger.error(f"Error saving file {filepath}: {e}")
+        return filepath
+
+    async def _make_concise_if_needed(self, text: str) -> str:
+        """
+        If 'text' exceeds 150 words, tries up to 'max_concise_retries' times to
+        have the LLM produce a shorter version (still using the same structured output model).
+        """
+        def count_words(t: str) -> int:
+            return len(t.split())
+
+        current_text = text
+        attempt = 0
+
+        while attempt < self.max_concise_retries and count_words(current_text) > 150:
+            attempt += 1
+            logger.info(f"Prompt exceeds 150 words, attempting concise rewrite (attempt {attempt})...")
+
+            # We'll re-use the ImagePrompt structure for conciseness requests
+            llm = OllamaClient(
+                'src/multipersona_chat_app/config/llm_config.yaml',
+                output_model=ImagePrompt
+            )
+            if self.llm_client.user_selected_model:
+                llm.set_user_selected_model(self.llm_client.user_selected_model)
+
+            # System prompt & user prompt for the conciseness request
+            system_prompt = (
+                "You are an assistant rewriting a prompt to be shorter. "
+                "Return the final text in the 'short_prompt' field, with minimal words (under 150)."
+            )
+            user_prompt = (
+                "Rewrite this text to be under 150 words, preserving overall meaning:\n\n"
+                f"{current_text}"
+            )
+
+            # Save the intermediate system/user prompts and output for debugging
+            attempt_tag = f"concise_attempt{attempt}"
+            self.save_text_to_file(system_prompt, f"system_prompt_{attempt_tag}")
+            self.save_text_to_file(user_prompt, f"user_prompt_{attempt_tag}")
+
+            # Generate
+            result_obj = await asyncio.to_thread(
+                llm.generate,
+                prompt=user_prompt,
+                system=system_prompt,
+                use_cache=False
+            )
+
+            if not result_obj or not isinstance(result_obj, ImagePrompt):
+                logger.warning("Concise rewrite attempt returned no valid output.")
+                break
+
+            new_text = result_obj.short_prompt.strip('\"\'').replace('\n', '')
+            self.save_text_to_file(new_text, f"llm_output_{attempt_tag}")
+            current_text = new_text
+
+        return current_text

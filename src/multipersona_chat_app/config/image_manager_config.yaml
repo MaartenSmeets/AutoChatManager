@@ -24,4 +24,4 @@ user_prompt_template: |
 
   Generate a concise, creative prompt designed to maximize artistic potential and visual appeal, focusing on the scene's most evocative and visually striking elements, while adhering to the provided guidelines.
 
-max_concise_retries: 2
+max_concise_retries: 3
