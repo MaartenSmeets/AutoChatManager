@@ -24,7 +24,7 @@ class ImageManager:
 
     Additionally:
       - Saves system, user, and LLM-generated prompts to text files.
-      - Checks if the final LLM output exceeds a word limit (150 words), and if so, 
+      - Checks if the final LLM output exceeds a word limit (175 words), and if so, 
         attempts to regenerate a more concise version up to a configurable number 
         of retries (loaded from image_manager_config.yaml as 'max_concise_retries').
     """
@@ -177,7 +177,7 @@ class ImageManager:
 
     async def _make_concise_if_needed(self, text: str) -> str:
         """
-        If 'text' exceeds 150 words, tries up to 'max_concise_retries' times to
+        If 'text' exceeds 175 words, tries up to 'max_concise_retries' times to
         have the LLM produce a shorter version (still using the same structured output model).
         """
         def count_words(t: str) -> int:
@@ -186,9 +186,9 @@ class ImageManager:
         current_text = text
         attempt = 0
 
-        while attempt < self.max_concise_retries and count_words(current_text) > 150:
+        while attempt < self.max_concise_retries and count_words(current_text) > 175:
             attempt += 1
-            logger.info(f"Prompt exceeds 150 words, attempting concise rewrite (attempt {attempt})...")
+            logger.info(f"Prompt exceeds 175 words, attempting concise rewrite (attempt {attempt})...")
 
             # We'll re-use the ImagePrompt structure for conciseness requests
             llm = OllamaClient(
