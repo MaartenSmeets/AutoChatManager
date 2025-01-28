@@ -359,7 +359,7 @@ def generate_images_from_directory(
     if not prompt_files:
         logging.warning(f"No files found in directory '{directory}' matching filter '{file_filter}'.")
         return
-
+    prompt_files.sort()
     for file_path in prompt_files:
         try:
             with open(file_path, "r", encoding="utf-8") as f:

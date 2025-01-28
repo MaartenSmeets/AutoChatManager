@@ -465,12 +465,18 @@ class ChatManager:
         return message_id
 
     async def generate_scene_prompt(self):
+        """
+        Manually trigger creation of a concise scene/character description, 
+        now including recent in-world action/dialogue as additional context.
+        """
+
         setting_desc = self.db.get_current_setting_description(self.session_id) or ""
         if not setting_desc.strip() and self.current_setting in self.settings:
             setting_desc = self.settings[self.current_setting].get('description', '')
 
         guidelines = self.moral_guidelines or ""
 
+        # Collect all non-NPC characters' data
         session_chars = self.db.get_session_characters(self.session_id)
         char_data = []
         for char_name in session_chars:
@@ -492,18 +498,32 @@ class ChatManager:
                 "name": char_name
             })
 
+        # Gather last few lines of visible messages from the session for extra context
+        all_msgs = self.db.get_messages(self.session_id)
+        recent_lines = []
+        for m in all_msgs[-5:]:
+            # We only care about user or character messages
+            if m["message_type"] in ("character", "user"):
+                recent_lines.append(f"{m['sender']}: {m['message']}")
+        recent_dialogue_text = "\n".join(recent_lines)
+
+        # Provide real-time status if needed
         if self.llm_status_callback:
             await self.llm_status_callback("[ImageManager] Building scene prompt data...")
 
+        # Now pass the 'recent_dialogue' into generate_concise_description
         prompt_text = await self.image_manager.generate_concise_description(
             setting=setting_desc,
             moral_guidelines=guidelines,
             non_npc_characters=char_data,
+            recent_dialogue=recent_dialogue_text,
             llm_status_callback=self.llm_status_callback
         )
 
+        # Save the final image prompt to a file
         self.image_manager.save_prompt_to_file(prompt_text, output_folder="output")
 
+        # Optionally display or log LLM status
         if self.llm_status_callback:
             await self.llm_status_callback(
                 f"[ImageManager] Scene prompt generated and saved.\n\n{prompt_text}"
