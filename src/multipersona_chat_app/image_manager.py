@@ -61,6 +61,7 @@ class ImageManager:
         setting: str,
         moral_guidelines: str,
         non_npc_characters: list,
+        recent_dialogue: str = "",
         llm_status_callback=None
     ) -> str:
         """
@@ -76,6 +77,8 @@ class ImageManager:
               'name': str
             }
           Names are excluded to keep them anonymous.
+        :param recent_dialogue: a short summary or lines of recent in-world action and dialogue
+        :param llm_status_callback: optional async callback to report LLM status
         """
         if not self.user_prompt_template.strip():
             logger.warning("No user_prompt_template found; returning empty description.")
@@ -100,12 +103,13 @@ class ImageManager:
 
         characters_text = "\n\n".join(characters_list)
 
-        # Fill in the user prompt template
+        # Fill in the user prompt template with the new recent_dialogue context
         final_prompt = (
             self.user_prompt_template
             .replace("{characters}", characters_text)
             .replace("{setting}", setting)
             .replace("{moral_guidelines}", moral_guidelines)
+            .replace("{recent_dialogue}", recent_dialogue)
         )
 
         # Instantiate a local LLM client for structured output

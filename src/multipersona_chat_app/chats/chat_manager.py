@@ -1197,6 +1197,17 @@ class ChatManager:
         dynamic_prompt: str,
         interaction: Interaction
     ) -> Optional[Interaction]:
+        """
+        Checks the generated interaction (action + dialogue) for excessive similarity
+        to the character's own recent messages and to each other. If violations are
+        detected, we attempt to regenerate a new interaction up to `max_similarity_retries`
+        times. Detailed logging is performed to identify each failed check, including
+        which texts were compared and which similarity threshold(s) were exceeded.
+        
+        The appended warning text (passed along with the dynamic_prompt on regeneration)
+        explains functionally how the content should be changed to be less repetitive
+        (without referencing the actual similarity metrics).
+        """
         all_visible = self.db.get_visible_messages_for_character(self.session_id, character_name)
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
         recent_speaker_lines = same_speaker_lines[-5:] if len(same_speaker_lines) > 5 else same_speaker_lines
@@ -1216,35 +1227,66 @@ class ChatManager:
             violation_detected = False
             violation_reasons = []
 
+            # 1) Check for any real alphanumeric content.
             if (not re.search(r'[A-Za-z0-9]', action_text)) and (not re.search(r'[A-Za-z0-9]', dialogue_text)):
+                logger.warning(
+                    f"[{character_name}] Check failed: no alphanumeric content in both action and dialogue."
+                )
                 violation_detected = True
-                violation_reasons.append("No alphanumeric content in both action and dialogue.")
+                violation_reasons.append(
+                    "Your action and dialogue both seem empty or non-descriptive."
+                )
 
+            # 2) Check for placeholder angle brackets.
             if "<" in action_text or ">" in action_text or "<" in dialogue_text or ">" in dialogue_text:
+                logger.warning(
+                    f"[{character_name}] Check failed: angle bracket placeholder(s) detected."
+                )
                 violation_detected = True
-                violation_reasons.append("Angle-bracket placeholders detected in output.")
+                violation_reasons.append(
+                    "Remove any placeholder angle brackets and replace them with a proper description."
+                )
 
+            # 3) Check if dialogue is exactly repeated in action.
             if dialogue_text.strip() and dialogue_text.strip() in action_text:
+                logger.warning(
+                    f"[{character_name}] Check failed: dialogue text repeated within the action field."
+                )
                 violation_detected = True
-                violation_reasons.append("Dialogue text repeated in action field.")
+                violation_reasons.append(
+                    "Your action text should not simply restate the entire dialogue."
+                )
 
+            # Prepare embeddings for similarity checks
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Computing embeddings for repetition check (attempt {tries + 1}) for {character_name}."
+                    f"[RepetitionCheck] Computing embeddings (attempt {tries + 1}) for {character_name}."
                 )
 
             action_embedding = embed_client.get_embedding(action_text)
             dialogue_embedding = embed_client.get_embedding(dialogue_text)
-            actiondialogue_embedding = embed_client.get_embedding(action_text + ' ' + dialogue_text)
+            combined_text = action_text + " " + dialogue_text
+            actiondialogue_embedding = embed_client.get_embedding(combined_text)
 
+            # 4) Compare action vs. dialogue similarity
             cos_sim_action_dialogue = embed_client.compute_cosine_similarity(action_embedding, dialogue_embedding)
             jac_sim_action_dialogue = embed_client.compute_jaccard_similarity(action_text, dialogue_text)
-
+            logger.debug(
+                f"[{character_name}] Comparing action vs dialogue => "
+                f"cos={cos_sim_action_dialogue:.3f}, jac={jac_sim_action_dialogue:.3f}"
+            )
             if (cos_sim_action_dialogue >= self.similarity_threshold or
                 jac_sim_action_dialogue >= self.similarity_threshold):
+                logger.warning(
+                    f"[{character_name}] Check failed: action and dialogue too similar "
+                    f"(cos={cos_sim_action_dialogue:.3f}, jac={jac_sim_action_dialogue:.3f})."
+                )
                 violation_detected = True
-                violation_reasons.append("Action and dialogue are too similar to each other.")
+                violation_reasons.append(
+                    "Your action and dialogue read almost the same. Please differentiate them."
+                )
 
+            # 5) Compare current action/dialogue to recent lines from the same speaker
             if not violation_detected:
                 for line_obj in recent_speaker_lines:
                     old_msg = line_obj["message"]
@@ -1256,36 +1298,65 @@ class ChatManager:
 
                     jac_sim_action = embed_client.compute_jaccard_similarity(action_text, old_msg)
                     jac_sim_dialogue = embed_client.compute_jaccard_similarity(dialogue_text, old_msg)
-                    jac_sim_both = embed_client.compute_jaccard_similarity(action_text + ' ' + dialogue_text, old_msg)
+                    jac_sim_both = embed_client.compute_jaccard_similarity(combined_text, old_msg)
 
-                    if (cos_sim_action >= self.similarity_threshold or jac_sim_action >= self.similarity_threshold or
-                        cos_sim_dialogue >= self.similarity_threshold or jac_sim_dialogue >= self.similarity_threshold or
-                        cos_sim_both >= self.similarity_threshold or jac_sim_both >= self.similarity_threshold):
+                    logger.debug(
+                        f"[{character_name}] Comparing current action/dialogue to a recent line:\n"
+                        f"  Current vs old_msg='{old_msg[:60]}...' => "
+                        f"cos_action={cos_sim_action:.3f}, cos_dialogue={cos_sim_dialogue:.3f}, "
+                        f"cos_combined={cos_sim_both:.3f} | "
+                        f"jac_action={jac_sim_action:.3f}, jac_dialogue={jac_sim_dialogue:.3f}, "
+                        f"jac_combined={jac_sim_both:.3f}"
+                    )
+
+                    if (
+                        cos_sim_action >= self.similarity_threshold or
+                        jac_sim_action >= self.similarity_threshold or
+                        cos_sim_dialogue >= self.similarity_threshold or
+                        jac_sim_dialogue >= self.similarity_threshold or
+                        cos_sim_both >= self.similarity_threshold or
+                        jac_sim_both >= self.similarity_threshold
+                    ):
+                        logger.warning(
+                            f"[{character_name}] Check failed: output is too similar to a recent line "
+                            f"(cos or jac >= {self.similarity_threshold})."
+                        )
                         violation_detected = True
-                        violation_reasons.append("Output is too similar to a recent line from the same speaker.")
+                        violation_reasons.append(
+                            "Your new message closely duplicates your own recent statements. Please vary it."
+                        )
                         break
 
+            # If no violation, return the current_interaction as valid.
             if not violation_detected:
-                logger.debug("Repetition checks passed; output is acceptable.")
+                logger.debug(f"[{character_name}] All repetition checks passed; output is acceptable.")
                 return current_interaction
 
+            # If violations, attempt regeneration if we haven't exhausted tries.
             tries += 1
             if tries > max_tries:
-                logger.warning("Exceeded maximum regeneration attempts.")
+                logger.warning(
+                    f"[{character_name}] Exceeded maximum regeneration attempts ({max_tries}). "
+                    "Returning None."
+                )
                 return None
 
-            appended_warning = "\n\n".join(violation_reasons)
+            # Build a user-facing appended warning that explains functionally how to revise.
             appended_warning = (
-                "\nIMPORTANT:\n"
-                + appended_warning
-                + "\nPlease regenerate without these issues. No angle brackets. Avoid duplication.\n"
+                "\nBelow are the issues we found:\n- "
+                + "\n- ".join(violation_reasons)
+                + "\n\nPlease revise your response to avoid these issues. "
+                "Improve or vary the wording so it's not overly similar to previous statements, "
+                "doesn't repeat dialogue in the action, and doesn't include placeholders.\n"
             )
 
-            logger.info(f"Violations for {character_name}: {violation_reasons} => Attempting regeneration #{tries}.")
+            logger.info(
+                f"[{character_name}] Violations: {violation_reasons} => Attempting regeneration #{tries}."
+            )
 
             if self.llm_status_callback:
                 await self.llm_status_callback(
-                    f"Attempting regeneration {tries} for {character_name} due to repetition/placeholder issues."
+                    f"[RepetitionCheck] Attempting regeneration {tries} for {character_name} due to similarity issues."
                 )
 
             regen_client = OllamaClient(
@@ -1295,6 +1366,7 @@ class ChatManager:
             if self.llm_client:
                 regen_client.set_user_selected_model(self.llm_client.user_selected_model)
 
+            # Append warning to the dynamic prompt
             revised_prompt = dynamic_prompt + appended_warning
             new_interaction = await asyncio.to_thread(
                 regen_client.generate,
@@ -1304,10 +1376,15 @@ class ChatManager:
             )
 
             if not new_interaction or not isinstance(new_interaction, Interaction):
-                logger.warning("No valid regeneration output. Stopping.")
+                logger.warning(
+                    f"[{character_name}] Regeneration attempt returned invalid output. Stopping."
+                )
                 return None
 
             current_interaction = new_interaction
+
+            # Then loop again to re-check new_interaction.
+
 
     def character_has_introduced(self, candidate_char_name: str) -> bool:
         return self._introduction_given.get(candidate_char_name, False)
