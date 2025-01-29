@@ -14,7 +14,7 @@ user_prompt_template: |
      - Transform character descriptions into clear visual attributes
      - Extract and emphasize distinctive features, expressions, and poses
      - Describe clothing, accessories, and character-defining elements
-     - Use general descriptors instead of names unless referring to well-known figures
+     - Use detailed descriptions instead of names (make sure characters are recognizable from the description) unless referring to well-known figures (such as celebrities or famous anime characters). When in doubt, use a detailed description.
 
   2. Scene Elements:
      - Identify and describe the key environmental features
@@ -51,6 +51,6 @@ user_prompt_template: |
   - Focus on visually descriptive language
   - Avoid abstract concepts or non-visual elements
 
-  FINAL TASK: Using the provided source information, generate a single, cohesive image generation prompt that captures the scene's most important visual elements while following all guidelines above. The prompt should be detailed enough to guide image generation but concise enough to be effective.
+  FINAL TASK: Using the provided source information, generate a single, cohesive image generation prompt that captures the scene's most important visual elements while following all guidelines above. The prompt should be detailed enough to guide image generation but concise enough to be effective. Do not mention names but use detailed character descriptions unless clearly famous or well known people.
 
 max_concise_retries: 3
