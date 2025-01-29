@@ -25,7 +25,7 @@ CONFIG_NEGATIVE = (
 
 # Sampler and model inference settings
 CONFIG_SAMPLER_NAME = "DPM++ 2M Karras"
-CONFIG_NUM_IMAGES = 3     # Number of images to generate per prompt
+CONFIG_NUM_IMAGES = 5     # Number of images to generate per prompt
 CONFIG_BATCH_SIZE = 1     # Typically keep this at 1; n_iter will handle how many images total
 CONFIG_IMAGE_WIDTH = 1024
 CONFIG_IMAGE_HEIGHT = 1024
