@@ -197,7 +197,7 @@ def regenerate_scene_prompts():
     model_url = "http://localhost:11434/api/generate"
 
     # Configure model name if needed
-    model_name = "huihui_ai/deepseek-r1-abliterated:70b"
+    model_name = "nchapman/l3.3-70b-euryale-v2.3:latest"
 
     # Number of retries
     max_retries = 3
