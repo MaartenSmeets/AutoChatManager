@@ -86,10 +86,10 @@ class ImageManager:
         )
 
         # Save system_prompt.txt and user_prompt.txt to the 'image_prompts' folder
-        self.save_text_to_file(self.system_prompt, "system_prompt", output_folder="image_prompts")
-        self.save_text_to_file(final_prompt, "user_prompt", output_folder="image_prompts")
+        self.save_text_to_file(self.system_prompt, "system_prompt", output_folder="output/image_prompts")
+        self.save_text_to_file(final_prompt, "user_prompt", output_folder="output/image_prompts")
 
-    def save_text_to_file(self, text: str, file_prefix: str, output_folder: str = "image_prompts") -> str:
+    def save_text_to_file(self, text: str, file_prefix: str, output_folder: str = "output/image_prompts") -> str:
         """
         Saves the given text to a timestamped file (file_prefix + .txt)
         in the specified output folder.

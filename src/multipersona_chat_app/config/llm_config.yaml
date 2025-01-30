@@ -7,3 +7,4 @@ max_retries: 3  # Number of retries for LLM requests
 temperature: 0.85  # Default temperature
 max_context_length: 128256  # Max context length before summarizing
 timeout: 600  # Timeout for LLM requests
+skip_system_prompt: true

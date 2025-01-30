@@ -23,6 +23,22 @@ import logging
 from pydantic import BaseModel
 from typing import Optional
 
+# ----------------------------
+# Configuration Variables
+# ----------------------------
+INPUT_DIR = "./output/image_prompts"
+OUTPUT_DIR = "./output/image_prompts"
+MODEL_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "huihui_ai/deepseek-r1-abliterated:70b-llama-distill-q6_K" #"nchapman/l3.3-70b-euryale-v2.3:latest"
+MAX_RETRIES = 3
+TEMPERATURE = 0.6
+
+# Some models do not support a separate system prompt.
+# If set to False, system prompt is concatenated with the user prompt
+# and only passed as "prompt" in the payload.
+SYSTEM_PROMPT_SUPPORTED = False
+# ----------------------------
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(levelname)s] %(asctime)s - %(message)s'
@@ -39,22 +55,35 @@ def call_ollama(
     user_prompt: str,
     model_url: str,
     model_name: str,
-    temperature: float
+    temperature: float,
+    system_prompt_supported: bool
 ) -> Optional[ScenePromptOutput]:
     """
     Calls a local LLM endpoint with streaming output.
     We expect the model to return lines of JSON, culminating in a JSON
     object that matches ScenePromptOutput.
     """
+
     headers = {"Content-Type": "application/json"}
-    payload = {
-        "model": model_name,
-        "prompt": user_prompt,
-        "system": system_prompt,
-        "options": {"temperature": temperature},
-        "stream": True,
-        "format": ScenePromptOutput.model_json_schema()
-    }
+    # Prepare the payload based on whether the model supports system prompts separately
+    if system_prompt_supported:
+        payload = {
+            "model": model_name,
+            "prompt": user_prompt,
+            "system": system_prompt,
+            "options": {"temperature": temperature},
+            "stream": True,
+            "format": ScenePromptOutput.model_json_schema()
+        }
+    else:
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+        payload = {
+            "model": model_name,
+            "prompt": combined_prompt,
+            "options": {"temperature": temperature},
+            "stream": True,
+            "format": ScenePromptOutput.model_json_schema()
+        }
 
     try:
         response = requests.post(model_url, json=payload, headers=headers, stream=True, timeout=300)
@@ -95,7 +124,8 @@ def generate_scene_prompt(
     model_url: str,
     model_name: str,
     temperature: float,
-    max_retries: int = 3
+    max_retries: int,
+    system_prompt_supported: bool
 ) -> Optional[str]:
     """
     Attempts to generate a scene prompt up to 'max_retries' times.
@@ -148,7 +178,8 @@ that fits the context.
             user_prompt=current_user_prompt,
             model_url=model_url,
             model_name=model_name,
-            temperature=temperature
+            temperature=temperature,
+            system_prompt_supported=system_prompt_supported
         )
 
         if not result:
@@ -189,28 +220,17 @@ that fits the context.
 
 def regenerate_scene_prompts():
     """
-    Main routine with in-code configuration.
-    Scans for prompt file pairs and generates scene prompts in the output directory.
+    Main routine. Scans for prompt file pairs and generates scene prompts
+    in the output directory.
     """
-    input_dir = "./output"
-    output_dir = "./output"
-    model_url = "http://localhost:11434/api/generate"
 
-    # Configure model name if needed
-    model_name = "nchapman/l3.3-70b-euryale-v2.3:latest"
-
-    # Number of retries
-    max_retries = 3
-
-    temperature = 0.7
-
-    if not os.path.isdir(input_dir):
-        logging.error(f"Input directory '{input_dir}' does not exist.")
+    if not os.path.isdir(INPUT_DIR):
+        logging.error(f"Input directory '{INPUT_DIR}' does not exist.")
         return
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    all_files = os.listdir(input_dir)
+    all_files = os.listdir(INPUT_DIR)
     all_files.sort()
 
     prefix_map = {}
@@ -231,8 +251,8 @@ def regenerate_scene_prompts():
             logging.warning(f"Incomplete pair for prefix '{prefix}'. Skipping.")
             continue
 
-        sys_path = os.path.join(input_dir, sys_file)
-        usr_path = os.path.join(input_dir, usr_file)
+        sys_path = os.path.join(INPUT_DIR, sys_file)
+        usr_path = os.path.join(INPUT_DIR, usr_file)
 
         with open(sys_path, "r", encoding="utf-8") as f:
             system_text = f.read().strip()
@@ -244,18 +264,19 @@ def regenerate_scene_prompts():
         final_prompt = generate_scene_prompt(
             original_system_prompt=system_text,
             original_user_prompt=user_text,
-            model_url=model_url,
-            model_name=model_name,
-            temperature=temperature,
-            max_retries=max_retries
+            model_url=MODEL_URL,
+            model_name=MODEL_NAME,
+            temperature=TEMPERATURE,
+            max_retries=MAX_RETRIES,
+            system_prompt_supported=SYSTEM_PROMPT_SUPPORTED
         )
 
         if not final_prompt:
-            logging.error(f"Failed to obtain a valid prompt for '{prefix}' after {max_retries} retries. Skipping.")
+            logging.error(f"Failed to obtain a valid prompt for '{prefix}' after {MAX_RETRIES} retries. Skipping.")
             continue
 
         out_filename = f"{prefix}_scene_prompt.txt"
-        out_filepath = os.path.join(output_dir, out_filename)
+        out_filepath = os.path.join(OUTPUT_DIR, out_filename)
 
         try:
             with open(out_filepath, "w", encoding="utf-8") as f_out:
