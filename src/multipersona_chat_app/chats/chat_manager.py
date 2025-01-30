@@ -1052,12 +1052,13 @@ class ChatManager:
             plan_client.set_user_selected_model(self.llm_client.user_selected_model)
 
         existing_plan = self.get_character_plan(character_name)
-        old_goal = existing_plan.goal
-        old_steps = existing_plan.steps
-        old_why = existing_plan.why_new_plan_goal
+        old_goal = existing_plan.goal.strip()
+        old_steps = [s.strip() for s in existing_plan.steps if s.strip()]
+        old_why = existing_plan.why_new_plan_goal.strip()
 
         my_appearance = self.db.get_character_appearance(self.session_id, character_name)
         others_appearance = self.db.get_characters_appearance_except_one(self.session_id, character_name)
+        # Only include others who have introduced themselves (spoken at least once).
         others_appearance = {
             c: a for c, a in others_appearance.items() if self.character_has_introduced(c)
         }
@@ -1096,24 +1097,125 @@ class ChatManager:
                 use_cache=False
             )
 
-            if not plan_result:
-                logger.warning("Plan update returned no result. Keeping existing plan.")
+            # Attempt to parse the first plan update result:
+            new_plan: Optional[CharacterPlan] = None
+            if plan_result:
+                try:
+                    if isinstance(plan_result, CharacterPlan):
+                        new_plan = plan_result
+                    else:
+                        # Attempt JSON parsing into the CharacterPlan model:
+                        new_plan = CharacterPlan.model_validate_json(plan_result)
+                except Exception as e2:
+                    logger.error(
+                        f"Failed to parse new plan for '{character_name}' on first attempt. "
+                        f"Error: {e2}"
+                    )
+                    new_plan = None
+
+            # ---------------
+            # If there's no *previous* plan (old_goal & old_steps are empty)
+            # AND the newly generated plan is also effectively empty,
+            # then we do a retry loop with a special instruction about being alone/with others.
+            # ---------------
+            plan_retry_amount = self.config.get("plan_retry_amount", 2)
+            def plan_is_effectively_empty(plan_obj: CharacterPlan) -> bool:
+                """Check if a CharacterPlan has no real goal and no real steps."""
+                has_goal = bool(plan_obj.goal.strip())
+                has_steps = any(s.strip() for s in plan_obj.steps)
+                return (not has_goal) and (not has_steps)
+
+            need_special_retry = False
+            if not old_goal and not old_steps:
+                # No previous plan
+                if (not new_plan) or plan_is_effectively_empty(new_plan):
+                    # LLM also returned no plan
+                    need_special_retry = True
+
+            if need_special_retry:
+                # Figure out if the character is alone or with others who have spoken.
+                messages = self.db.get_messages(self.session_id)
+                other_speakers = set(
+                    m['sender'] for m in messages
+                    if m['message_type'] in ('character', 'user')
+                    and m['sender'] != character_name
+                )
+                # Only keep those who have introduced themselves.
+                other_speakers = {c for c in other_speakers if self.character_has_introduced(c)}
+
+                if len(other_speakers) == 0:
+                    special_context_line = (
+                        f"You are currently alone in this setting. "
+                        f"Please reflect on what {character_name} might want to do, explore, or accomplish. "
+                        f"Provide a goal, some steps to achieve it, and explain briefly why this plan matters."
+                    )
+                else:
+                    others_list = ", ".join(sorted(other_speakers))
+                    special_context_line = (
+                        f"You are with these other active participants: {others_list}. "
+                        f"Please consider how {character_name} interacts with them or the environment. "
+                        f"Provide a goal, steps to pursue that goal, and a short reason why this plan."
+                    )
+
+                # We will attempt plan_retry_amount times to get a non-empty plan.
+                for attempt_idx in range(plan_retry_amount):
+                    if self.llm_status_callback:
+                        await self.llm_status_callback(
+                            f"Special plan retry {attempt_idx + 1} for {character_name} (no prior plan)."
+                        )
+
+                    # Build a more direct prompt:
+                    special_user_prompt = (
+                        user_prompt
+                        + "\n\n[NOTE]\n"
+                        + "No plan was found previously. " + special_context_line
+                    )
+
+                    plan_retry_result = await asyncio.to_thread(
+                        plan_client.generate,
+                        prompt=special_user_prompt,
+                        system=system_prompt,
+                        use_cache=False
+                    )
+                    parsed_retry_plan: Optional[CharacterPlan] = None
+                    if plan_retry_result:
+                        try:
+                            if isinstance(plan_retry_result, CharacterPlan):
+                                parsed_retry_plan = plan_retry_result
+                            else:
+                                parsed_retry_plan = CharacterPlan.model_validate_json(plan_retry_result)
+                        except Exception:
+                            parsed_retry_plan = None
+
+                    if parsed_retry_plan and not plan_is_effectively_empty(parsed_retry_plan):
+                        # We finally got a workable plan
+                        new_plan = parsed_retry_plan
+                        break
+
+                # If after all retries we still have nothing, new_plan remains None or effectively empty.
+
+            # ---------------
+            # If new_plan is still None or empty, we keep the old plan and return.
+            # Otherwise, proceed with normal storing in DB
+            # ---------------
+            if not new_plan:
+                logger.warning("Plan update returned no valid result. Keeping existing plan (if any).")
                 if self.llm_status_callback:
                     await self.llm_status_callback(
                         f"No plan update was generated for {character_name}; retaining old plan."
                     )
                 return
-
-            try:
-                if isinstance(plan_result, CharacterPlan):
-                    new_plan: CharacterPlan = plan_result
-                else:
-                    new_plan = CharacterPlan.model_validate_json(plan_result)
-
-                new_goal = new_plan.goal
-                new_steps = new_plan.steps
+            else:
+                new_goal = new_plan.goal.strip()
+                new_steps = [s.strip() for s in new_plan.steps if s.strip()]
                 new_why = new_plan.why_new_plan_goal.strip()
 
+                # If still empty, keep the old plan and return:
+                if (not new_goal) and (not new_steps):
+                    logger.warning("Final plan remains empty after retries. Keeping existing plan.")
+                    return
+
+                # Now store or track the plan changes if any
                 if (new_goal != old_goal) or (new_steps != old_steps) or (new_why != old_why):
                     change_explanation = self.build_plan_change_summary(old_goal, old_steps, new_goal, new_steps)
                     if new_why:
@@ -1142,15 +1244,6 @@ class ChatManager:
                 if self.llm_status_callback:
                     await self.llm_status_callback(
                         f"Plan updated for {character_name} (Goal: {new_goal})."
-                    )
-
-            except Exception as e2:
-                logger.error(
-                    f"Failed to parse new plan for '{character_name}'. Keeping old plan. Error: {e2}"
-                )
-                if self.llm_status_callback:
-                    await self.llm_status_callback(
-                        f"Error parsing new plan for {character_name}; old plan remains."
                     )
 
         except Exception as e:
