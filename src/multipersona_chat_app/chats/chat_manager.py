@@ -139,8 +139,7 @@ class ChatManager:
 
         # Instantiate the ImageManager
         self.image_manager = ImageManager(
-            config_path=os.path.join("src", "multipersona_chat_app", "config", "image_manager_config.yaml"),
-            llm_client=self.llm_client
+            config_path=os.path.join("src", "multipersona_chat_app", "config", "image_manager_config.yaml")
         )
 
     @staticmethod
@@ -466,10 +465,10 @@ class ChatManager:
 
     async def generate_scene_prompt(self):
         """
-        Manually trigger creation of a concise scene/character description, 
-        now including recent in-world action/dialogue as additional context.
+        Generates only system_prompt.txt and user_prompt.txt for the current scene,
+        saved in a dedicated 'image_prompts' folder. No LLM calls or additional
+        output files are produced.
         """
-
         setting_desc = self.db.get_current_setting_description(self.session_id) or ""
         if not setting_desc.strip() and self.current_setting in self.settings:
             setting_desc = self.settings[self.current_setting].get('description', '')
@@ -502,32 +501,17 @@ class ChatManager:
         all_msgs = self.db.get_messages(self.session_id)
         recent_lines = []
         for m in all_msgs[-5:]:
-            # We only care about user or character messages
             if m["message_type"] in ("character", "user"):
                 recent_lines.append(f"{m['sender']}: {m['message']}")
         recent_dialogue_text = "\n".join(recent_lines)
 
-        # Provide real-time status if needed
-        if self.llm_status_callback:
-            await self.llm_status_callback("[ImageManager] Building scene prompt data...")
-
-        # Now pass the 'recent_dialogue' into generate_concise_description
-        prompt_text = await self.image_manager.generate_concise_description(
+        # Generate only the system_prompt.txt and user_prompt.txt files; no LLM calls
+        await self.image_manager.generate_concise_description(
             setting=setting_desc,
             moral_guidelines=guidelines,
             non_npc_characters=char_data,
-            recent_dialogue=recent_dialogue_text,
-            llm_status_callback=self.llm_status_callback
+            recent_dialogue=recent_dialogue_text
         )
-
-        # Save the final image prompt to a file
-        self.image_manager.save_prompt_to_file(prompt_text, output_folder="output")
-
-        # Optionally display or log LLM status
-        if self.llm_status_callback:
-            await self.llm_status_callback(
-                f"[ImageManager] Scene prompt generated and saved.\n\n{prompt_text}"
-            )
 
     def start_automatic_chat(self):
         self.automatic_running = True

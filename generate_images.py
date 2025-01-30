@@ -13,7 +13,7 @@ import traceback
 CONFIG_SDWEBUI_SERVER_URL = "http://127.0.0.1:7860"
 
 # Model to use in SD WebUI
-CONFIG_SDWEBUI_MODEL = "waiANINSFWPONYXL_v130.safetensors"
+CONFIG_SDWEBUI_MODEL = "prefectPonyXL_v50.safetensors"
 
 # Content to prepend to every prompt (formerly CONFIG_SDWEBUI_LORA)
 CONFIG_SDWEBUI_PREPEND = "score_9, score_8_up, score_7_up, source_anime"
