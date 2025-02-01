@@ -466,8 +466,9 @@ class ChatManager:
     async def generate_scene_prompt(self):
         """
         Generates only system_prompt.txt and user_prompt.txt for the current scene,
-        saved in a dedicated 'image_prompts' folder. No LLM calls or additional
-        output files are produced.
+        saved in a dedicated 'image_prompts' folder. Incorporates previous summaries from
+        non-NPC characters to enrich the scene prompt.
+        No LLM calls or additional output files are produced.
         """
         setting_desc = self.db.get_current_setting_description(self.session_id) or ""
         if not setting_desc.strip() and self.current_setting in self.settings:
@@ -475,9 +476,10 @@ class ChatManager:
 
         guidelines = self.moral_guidelines or ""
 
-        # Collect all non-NPC characters' data
+        # Collect all non-NPC characters' data and gather previous summaries.
         session_chars = self.db.get_session_characters(self.session_id)
         char_data = []
+        previous_summaries = ""
         for char_name in session_chars:
             meta = self.db.get_character_metadata(self.session_id, char_name)
             if meta and meta.is_npc:
@@ -497,7 +499,12 @@ class ChatManager:
                 "name": char_name
             })
 
-        # Gather last few lines of visible messages from the session for extra context
+            # Gather previous summaries for each non-NPC character.
+            summaries = self.db.get_all_summaries(self.session_id, char_name)
+            if summaries:
+                previous_summaries += f"{char_name} summaries: " + " ".join(summaries) + "\n"
+
+        # Gather last few lines of visible messages from the session for extra context.
         all_msgs = self.db.get_messages(self.session_id)
         recent_lines = []
         for m in all_msgs[-5:]:
@@ -505,12 +512,13 @@ class ChatManager:
                 recent_lines.append(f"{m['sender']}: {m['message']}")
         recent_dialogue_text = "\n".join(recent_lines)
 
-        # Generate only the system_prompt.txt and user_prompt.txt files; no LLM calls
+        # Generate only the system_prompt.txt and user_prompt.txt files; no LLM calls.
         await self.image_manager.generate_concise_description(
             setting=setting_desc,
             moral_guidelines=guidelines,
             non_npc_characters=char_data,
-            recent_dialogue=recent_dialogue_text
+            recent_dialogue=recent_dialogue_text,
+            previous_summaries=previous_summaries
         )
 
     def start_automatic_chat(self):

@@ -47,11 +47,13 @@ class ImageManager:
         setting: str,
         moral_guidelines: str,
         non_npc_characters: list,
-        recent_dialogue: str = ""
+        recent_dialogue: str = "",
+        previous_summaries: str = ""
     ) -> None:
         """
         Builds user/system prompts and saves them to 'image_prompts' folder.
-        No LLM calls or extra output files are generated.
+        Incorporates previous summaries if available to enrich the scene description.
+        No LLM calls or extra output files are produced.
         """
         if not self.user_prompt_template.strip():
             logger.warning("No user_prompt_template found; returning without generating prompts.")
@@ -76,13 +78,14 @@ class ImageManager:
 
         characters_text = "\n\n".join(characters_list)
 
-        # Fill in the user prompt template
+        # Fill in the user prompt template with provided data including previous summaries
         final_prompt = (
             self.user_prompt_template
                 .replace("{characters}", characters_text)
                 .replace("{setting}", setting)
                 .replace("{moral_guidelines}", moral_guidelines)
                 .replace("{recent_dialogue}", recent_dialogue)
+                .replace("{previous_summaries}", previous_summaries)
         )
 
         # Save system_prompt.txt and user_prompt.txt to the 'image_prompts' folder

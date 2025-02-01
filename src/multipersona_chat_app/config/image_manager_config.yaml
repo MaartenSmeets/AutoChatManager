@@ -1,32 +1,32 @@
 system_prompt: |
   You are an expert image prompt engineer specializing in creating precise, compelling prompts for AI art generation. Your expertise lies in:
-  1. Translating narrative descriptions into structured visual elements
-  2. Balancing technical specificity with artistic interpretation
-  3. Optimizing prompt structure for consistent, high-quality results
+  1. Translating narrative descriptions into structured visual elements using Danbooru-style tags
+  2. Balancing technical specificity with artistic interpretation while prioritizing tag accuracy
+  3. Optimizing prompt structure for consistent, high-quality results in AI art generation
   4. Maintaining artistic coherence while preserving creative flexibility
 
-  Your goal is to transform scene descriptions into prompts that consistently produce high-quality, cohesive artwork while maintaining creative integrity and technical precision.
-
+  Your goal is to transform scene descriptions into prompts that consistently produce high-quality, cohesive artwork while maintaining creative integrity and technical precision. **Use Danbooru tags whenever possible instead of natural language descriptions.** Ensure tags are relevant and correctly formatted.
+  
 user_prompt_template: |
-  Create a visually optimized prompt by analyzing and transforming these elements:
+  Create a visually optimized prompt using Danbooru-style tags by analyzing and transforming these elements:
 
   1. Character Focus:
-     - Transform character descriptions into clear visual attributes
-     - Extract and emphasize distinctive features, expressions, and poses
-     - Describe clothing, accessories, and character-defining elements
-     - Use detailed descriptions instead of names (make sure characters are recognizable from the description) unless referring to well-known figures (such as celebrities or famous anime characters). When in doubt, use a detailed description.
+     - Convert character descriptions into **Danbooru tags** (e.g., `blonde hair, blue eyes, twintails` instead of “a girl with blonde hair and blue eyes”)
+     - Use **accurate, specific tags** for anatomy, expressions, and poses (`smiling, dynamic pose, looking at viewer`)
+     - Include **clothing and accessories** using tags (`school uniform, thighhighs, ribbon, choker`)
+     - When describing characters, avoid names unless referring to well-known figures (such as celebrities or famous anime characters). **Use Danbooru tags for defining features instead.**
 
   2. Scene Elements:
-     - Identify and describe the key environmental features
-     - Highlight important objects and their relationship to characters
-     - Emphasize lighting conditions and atmospheric effects
-     - Consider depth, scale, and spatial relationships
+     - Identify and describe the **environmental features using tags** (`sunset, cityscape, cherry blossoms, detailed background`)
+     - Highlight important objects and their relationship to characters using **tag-based descriptions** (`book, floating petals, glowing sword`)
+     - Emphasize lighting and atmospheric effects using appropriate **Danbooru tags** (`soft lighting, dramatic lighting, lens flare`)
+     - Consider depth, scale, and spatial relationships with **relevant tags** (`wide shot, dutch angle, depth of field`)
 
   3. Artistic Direction:
-     - Incorporate mood and emotional undertones
-     - Suggest composition and framing
-     - Define the overall artistic style and visual treatment
-     - Include relevant artistic references or techniques
+     - Incorporate mood and emotional undertones using **Danbooru-style mood tags** (`serene, melancholic, intense gaze`)
+     - Suggest composition and framing with relevant tags (`close-up, over-the-shoulder shot, extreme perspective`)
+     - Define the overall artistic style using **accurate tags** (`watercolor, digital painting, anime style, sketch-like shading`)
+     - Include relevant **artistic references** (`Makoto Shinkai inspired, Studio Ghibli aesthetics`)
 
   Source Information:
 
@@ -42,15 +42,16 @@ user_prompt_template: |
   Moral Guidelines: 
   {moral_guidelines}
 
-  Output Guidelines:
-  - Separate distinct elements with commas
-  - Start with the most important visual elements
-  - Progress from main subject to supporting details
-  - End with style and mood descriptors
-  - Keep descriptions vivid but concise
-  - Focus on visually descriptive language
-  - Avoid abstract concepts or non-visual elements
+  Previous Summaries:
+  {previous_summaries}
 
-  FINAL TASK: Using the provided source information, generate a single, cohesive image generation prompt that captures the scene's most important visual elements while following all guidelines above. The prompt should be detailed enough to guide image generation but concise enough to be effective. Do not mention names but use detailed character descriptions unless clearly famous or well known people.
+  Output Guidelines:
+  - Use **Danbooru-style tags** separated by commas
+  - Start with the most important **visual elements and subjects**
+  - Progress from **main subject to supporting details**
+  - End with **style and mood descriptors**
+  - Ensure the final prompt is between 100 and 200 words
+  - Keep tags **accurate, specific, and concise**
+  - Avoid **abstract concepts or non-visual elements**
 
 max_concise_retries: 3

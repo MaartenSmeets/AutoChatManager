@@ -29,14 +29,14 @@ from typing import Optional
 INPUT_DIR = "./output/image_prompts"
 OUTPUT_DIR = "./output/image_prompts"
 MODEL_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "huihui_ai/deepseek-r1-abliterated:70b-llama-distill-q6_K" #"nchapman/l3.3-70b-euryale-v2.3:latest"
-MAX_RETRIES = 3
+MODEL_NAME = "nchapman/l3.3-70b-euryale-v2.3:latest"# "DaddyLLAMA/behemoth_123b_v1_1:latest"  # or any other model endpoint
+MAX_RETRIES = 10
 TEMPERATURE = 0.6
 
 # Some models do not support a separate system prompt.
 # If set to False, system prompt is concatenated with the user prompt
 # and only passed as "prompt" in the payload.
-SYSTEM_PROMPT_SUPPORTED = False
+SYSTEM_PROMPT_SUPPORTED = True
 # ----------------------------
 
 logging.basicConfig(
@@ -129,9 +129,12 @@ def generate_scene_prompt(
 ) -> Optional[str]:
     """
     Attempts to generate a scene prompt up to 'max_retries' times.
-    - If the returned prompt is fewer than 100 words, we retry by appending extra detail instructions.
+    - If the returned prompt is fewer than 100 words, we retry by appending extra detail instructions,
+      also specifying the longest attempt so far for elaboration.
     - If the returned prompt is more than 200 words, we retry by switching to a condensing system prompt.
     - Otherwise, we accept the prompt.
+    - After all retries, if the final result is still not >=100 words, we use the longest generated scene prompt
+      from any attempt.
     """
 
     # System prompt for reducing/condensing a too-long prompt.
@@ -156,18 +159,27 @@ that fits the context.
         "Condense this image generation prompt while preserving key visual elements and style:\n\n{}"
     )
 
-    # Additional note added when the output is too short.
-    additional_detail_note = (
-        "\n\nAdditional note: The condensed prompt was too short previously. "
-        "Please include enough descriptive elements so that characters, setting, and "
-        "important details are recognizable. Keep essential context and style."
-    )
+    # Template note for when the output is too short.
+    additional_detail_note_template = r"""
+IMPORTANT: The generated prompt was too short previously ({previous_word_count} words).
+So far, the longest attempt is {longest_word_count_so_far} words:
+
+{longest_prompt_so_far}
+
+Please expand upon it with more detail to ensure enough descriptive elements so that characters, setting,
+and important details are recognizable. Do not mention character names unless they are definitely
+famous celebrities or characters from well-known media.
+""".strip()
 
     current_system_prompt = original_system_prompt
     current_user_prompt = original_user_prompt
 
+    # Track the longest prompt so far across attempts
+    longest_prompt_so_far = ""
+    longest_word_count_so_far = 0
+
     attempt = 0
-    result = None
+    final_result = None
 
     while attempt < max_retries:
         attempt += 1
@@ -187,14 +199,27 @@ that fits the context.
             continue
 
         scene_prompt_text = result.short_prompt.strip()
-        # Count words instead of characters
         word_count = len(scene_prompt_text.split())
 
+        # Update longest prompt if this is the longest so far
+        if word_count > longest_word_count_so_far:
+            longest_word_count_so_far = word_count
+            longest_prompt_so_far = scene_prompt_text
+
+        # Check word count constraints
         if word_count < 100:
             logging.info(
                 f"Prompt too short ({word_count} words). Adding detail instructions and retrying."
             )
-            current_user_prompt += additional_detail_note
+            # Incorporate the longest prompt so far into the additional detail note
+            updated_additional_detail_note = additional_detail_note_template.format(
+                previous_word_count=word_count,
+                longest_word_count_so_far=longest_word_count_so_far,
+                longest_prompt_so_far=longest_prompt_so_far
+            )
+            current_user_prompt += "\n\n" + updated_additional_detail_note
+            final_result = result  # Keep track of the last valid result
+            continue
 
         elif word_count > 200:
             logging.info(
@@ -202,18 +227,36 @@ that fits the context.
             )
             current_system_prompt = condensing_system_prompt
             current_user_prompt = condense_user_prompt_template.format(scene_prompt_text)
+            final_result = result
+            continue
 
         else:
             # It's within acceptable range (100-200 words)
             return scene_prompt_text
 
-    # If we exit the loop, we didn't get a prompt in the desired word range.
-    # Return the last result if it exists, otherwise None.
-    if result:
-        logging.warning(
-            "Exceeded maximum retries. Returning the last valid prompt even if it's out of the 100-200 word range."
-        )
-        return result.short_prompt.strip()
+    # If we exit the loop, we didn't get a prompt in the desired 100-200 word range.
+    if final_result:
+        final_prompt_text = final_result.short_prompt.strip()
+        final_prompt_word_count = len(final_prompt_text.split())
+
+        # 1) If after all retries the final result is still not >= 100 words, use the longest attempt so far
+        if final_prompt_word_count < 100:
+            if longest_word_count_so_far > final_prompt_word_count:
+                logging.warning(
+                    "Exceeded maximum retries. The final prompt is too short. Using the longest prompt from attempts."
+                )
+                return longest_prompt_so_far
+            else:
+                logging.warning(
+                    "Exceeded maximum retries. Final prompt is too short and no longer attempt found. Returning final."
+                )
+                return final_prompt_text
+        else:
+            # It's out of the desired loop range, but at least we have something
+            logging.warning(
+                "Exceeded maximum retries. Returning the last valid prompt even if it's out of the 100-200 word range."
+            )
+            return final_prompt_text
     else:
         logging.error("Exceeded maximum retries and never received valid output.")
         return None

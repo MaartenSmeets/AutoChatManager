@@ -34,7 +34,7 @@ CONFIG_STEPS = 30
 CONFIG_SEED = -1
 
 # Directory and file filter for prompts
-CONFIG_PROMPTS_DIR = "output"    # Directory containing prompt files
+CONFIG_PROMPTS_DIR = "output/image_prompts"    # Directory containing prompt files
 CONFIG_PROMPT_FILTER = "*scene_prompt.txt"   # File filter for prompt files
 
 # For logging / tracking
