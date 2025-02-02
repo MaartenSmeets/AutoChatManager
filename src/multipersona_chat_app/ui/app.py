@@ -274,6 +274,7 @@ def delete_session(_):
 
 
 def load_session(session_id: str):
+    global npc_switch, auto_switch, local_model_dropdown
     global is_session_being_loaded
     is_session_being_loaded = True
 
