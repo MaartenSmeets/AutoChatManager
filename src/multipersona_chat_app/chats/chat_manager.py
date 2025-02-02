@@ -98,7 +98,6 @@ class ChatManager:
                 self.current_setting = None
                 logger.error("No settings available to set as default.")
         else:
-            # If the stored setting is recognized, use it; else fallback to the first from YAML
             stored_setting = self.db.get_current_setting(self.session_id)
             if stored_setting and stored_setting in self.settings:
                 setting = self.settings[stored_setting]
@@ -121,12 +120,21 @@ class ChatManager:
 
         self.llm_client = llm_client
 
-        # Create an NPC manager to handle new NPC creation & location-based "should speak" checks
-        self.npc_manager = NPCManager(
-            session_id=self.session_id,
-            db=self.db,
-            llm_client=llm_client
-        )
+        # --- NEW: Load and store session-level toggle settings ---
+        session_settings = self.db.get_session_settings(self.session_id)
+        self.model_selection = session_settings.get('model_selection', '')
+        self.npc_manager_active = session_settings.get('npc_manager_active', False)
+        self.auto_chat = session_settings.get('auto_chat', False)
+        self.show_private_info = session_settings.get('show_private_info', True)
+        # Default NPC Manager is now inactive (False) unless restored from session settings.
+        if self.npc_manager_active:
+            self.npc_manager = NPCManager(
+                session_id=self.session_id,
+                db=self.db,
+                llm_client=llm_client
+            )
+        else:
+            self.npc_manager = None
 
         self.llm_status_callback = None
         # Track introduction status locally
@@ -137,11 +145,10 @@ class ChatManager:
 
         self.auto_prompt_generation_interval = self.config.get('auto_prompt_generation_interval', 0)
 
-        # Instantiate the ImageManager
         self.image_manager = ImageManager(
             config_path=os.path.join("src", "multipersona_chat_app", "config", "image_manager_config.yaml")
         )
-
+        
     @staticmethod
     def load_config(config_path: str) -> dict:
         try:
