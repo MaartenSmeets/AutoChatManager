@@ -286,7 +286,6 @@ def load_session(session_id: str):
     stored_start_location = chat_manager.db.get_current_location(session_id) or ""
     chat_msgs = chat_manager.db.get_messages(session_id)
 
-    # If recognized setting in YAML, re-apply it
     setting = next((s for s in ALL_SETTINGS if s['name'] == current_setting_name), None)
     if setting:
         chat_manager.set_current_setting(
@@ -331,14 +330,31 @@ def load_session(session_id: str):
     session_settings = chat_manager.db.get_session_settings(session_id)
     local_model_dropdown.value = session_settings.get('model_selection', '')
     npc_switch.value = session_settings.get('npc_manager_active', False)
-    auto_switch.value = session_settings.get('auto_chat', False)
+    # Force auto chat to be off on session load
+    auto_switch.value = False
     global show_private_info
     show_private_info = session_settings.get('show_private_info', True)
     npc_switch.update()
     auto_switch.update()
     local_model_dropdown.update()
 
-    # Add all previously added characters
+    # --- Do not auto-activate auto chat on session load ---
+    chat_manager.stop_automatic_chat()
+    if auto_timer:
+        auto_timer.active = False
+
+    # Apply NPC Manager setting from the session.
+    if session_settings.get('npc_manager_active', False):
+        chat_manager.enable_npc_manager()
+    else:
+        chat_manager.disable_npc_manager()
+
+    chat_manager.model_selection = session_settings.get('model_selection', '')
+    if chat_manager.model_selection:
+        llm_client.set_user_selected_model(chat_manager.model_selection)
+        introduction_llm_client.set_user_selected_model(chat_manager.model_selection)
+
+    # Add all previously added characters.
     session_chars = chat_manager.db.get_session_characters(session_id)
     for c_name in session_chars:
         if c_name in ALL_CHARACTERS:
@@ -350,7 +366,7 @@ def load_session(session_id: str):
     show_character_details.refresh()
     populate_session_dropdown()
 
-    # Disable settings if session already has messages
+    # Disable settings if session already has messages.
     has_msgs = len(chat_msgs) > 0
     settings_dropdown.disabled = has_msgs
     settings_dropdown.update()
@@ -389,7 +405,8 @@ def select_setting(event):
 def toggle_automatic_chat(e):
     if e.value:
         if not chat_manager.get_character_names():
-            asyncio.create_task(notification_queue.put(("No characters added. Cannot start automatic chat.", 'warning')))
+            # Use a synchronous call to add a notification to avoid 'no running event loop' error.
+            notification_queue.put_nowait(("No characters added. Cannot start automatic chat.", 'warning'))
             e.value = False
             return
         chat_manager.start_automatic_chat()
@@ -545,10 +562,14 @@ async def refresh_local_models():
     models = llm_client.list_local_models()
     local_model_dropdown.options = models
     local_model_dropdown.update()
-    if models:
+    # Preserve the stored model selection if it is still available.
+    stored = local_model_dropdown.value
+    if stored in models:
+        local_model_dropdown.value = stored
+    elif models:
         local_model_dropdown.value = models[0]
-        local_model_dropdown.update()
         on_local_model_select({"value": models[0]})
+    local_model_dropdown.update()
 
 
 def on_local_model_select(event):
