@@ -43,7 +43,6 @@ class DBManager:
                 setting_description TEXT,
                 model_selection TEXT DEFAULT '',
                 npc_manager_active INTEGER DEFAULT 0,
-                auto_chat INTEGER DEFAULT 0,
                 show_private_info INTEGER DEFAULT 1
             )
         ''')
@@ -1018,7 +1017,7 @@ class DBManager:
         conn = self._ensure_connection()
         c = conn.cursor()
         c.execute('''
-            SELECT model_selection, npc_manager_active, auto_chat, show_private_info
+            SELECT model_selection, npc_manager_active, show_private_info
             FROM sessions
             WHERE session_id = ?
         ''', (session_id,))
@@ -1028,10 +1027,9 @@ class DBManager:
             return {
                 'model_selection': row[0] or '',
                 'npc_manager_active': bool(row[1]),
-                'auto_chat': bool(row[2]),
-                'show_private_info': bool(row[3])
+                'show_private_info': bool(row[2])
             }
-        return {'model_selection': '', 'npc_manager_active': False, 'auto_chat': False, 'show_private_info': True}
+        return {'model_selection': '', 'npc_manager_active': False, 'show_private_info': True}
 
     def update_session_settings(self, session_id: str, settings: Dict[str, Any]):
         conn = self._ensure_connection()
@@ -1040,13 +1038,11 @@ class DBManager:
             UPDATE sessions
             SET model_selection = ?,
                 npc_manager_active = ?,
-                auto_chat = ?,
                 show_private_info = ?
             WHERE session_id = ?
         ''', (
             settings.get('model_selection', ''),
             1 if settings.get('npc_manager_active', False) else 0,
-            1 if settings.get('auto_chat', False) else 0,
             1 if settings.get('show_private_info', True) else 0,
             session_id
         ))

@@ -54,59 +54,36 @@ class CharacterPlan(BaseModel):
 class ChatManager:
     def __init__(self, session_id: Optional[str] = None, settings: List[Dict] = [],
                  llm_client: Optional[OllamaClient] = None):
-        """
-        A unified ChatManager that handles both PCs and NPCs in the same code path.
-        """
-        # We keep a local cache of known "PC" Characters loaded from YAML (the user picks them).
-        self.characters: Dict[str, Character] = {}
-        self.turn_index = 0
-        self.automatic_running = False
-        self.session_id = session_id if session_id else "default_session"
-        self.settings = {setting['name']: setting for setting in settings}
+            # We keep a local cache of known "PC" Characters loaded from YAML (the user picks them).
+            self.characters: Dict[str, Character] = {}
+            self.turn_index = 0
+            self.automatic_running = False
+            self.session_id = session_id if session_id else "default_session"
+            self.settings = {setting['name']: setting for setting in settings}
 
-        config_path = os.path.join("src", "multipersona_chat_app", "config", "chat_manager_config.yaml")
-        self.config = self.load_config(config_path)
+            config_path = os.path.join("src", "multipersona_chat_app", "config", "chat_manager_config.yaml")
+            self.config = self.load_config(config_path)
 
-        self.summarization_threshold = self.config.get('summarization_threshold', 20)
-        self.recent_dialogue_lines = self.config.get('recent_dialogue_lines', 5)
-        self.to_summarize_count = self.summarization_threshold - self.recent_dialogue_lines
+            self.summarization_threshold = self.config.get('summarization_threshold', 20)
+            self.recent_dialogue_lines = self.config.get('recent_dialogue_lines', 5)
+            self.to_summarize_count = self.summarization_threshold - self.recent_dialogue_lines
 
-        self.similarity_threshold = self.config.get("similarity_threshold", 0.8)
-        self.summary_of_summaries_count = self.config.get("summary_of_summaries_count", 5)
-        self.max_similarity_retries = self.config.get("max_similarity_retries", 2)
+            self.similarity_threshold = self.config.get("similarity_threshold", 0.8)
+            self.summary_of_summaries_count = self.config.get("summary_of_summaries_count", 5)
+            self.max_similarity_retries = self.config.get("max_similarity_retries", 2)
 
-        self.forced_update_interval = self.config.get("forced_update_interval", 5)
-        self.msg_counter_since_forced_update: Dict[str, int] = {}
+            self.forced_update_interval = self.config.get("forced_update_interval", 5)
+            self.msg_counter_since_forced_update: Dict[str, int] = {}
 
-        db_path = os.path.join("output", "conversations.db")
-        self.db = DBManager(db_path)
+            db_path = os.path.join("output", "conversations.db")
+            self.db = DBManager(db_path)
 
-        self.moral_guidelines = utils.get_moral_guidelines()
+            self.moral_guidelines = utils.get_moral_guidelines()
 
-        # Ensure the session exists in DB
-        existing_sessions = {s['session_id']: s for s in self.db.get_all_sessions()}
-        if self.session_id not in existing_sessions:
-            self.db.create_session(self.session_id, f"Session {self.session_id}")
-            if settings:
-                default_setting = settings[0]
-                self.set_current_setting(
-                    default_setting['name'],
-                    default_setting['description'],
-                    default_setting['start_location']
-                )
-            else:
-                self.current_setting = None
-                logger.error("No settings available to set as default.")
-        else:
-            stored_setting = self.db.get_current_setting(self.session_id)
-            if stored_setting and stored_setting in self.settings:
-                setting = self.settings[stored_setting]
-                self.set_current_setting(
-                    setting['name'],
-                    self.db.get_current_setting_description(self.session_id) or setting['description'],
-                    self.db.get_current_location(self.session_id) or setting['start_location']
-                )
-            else:
+            # Ensure the session exists in DB
+            existing_sessions = {s['session_id']: s for s in self.db.get_all_sessions()}
+            if self.session_id not in existing_sessions:
+                self.db.create_session(self.session_id, f"Session {self.session_id}")
                 if settings:
                     default_setting = settings[0]
                     self.set_current_setting(
@@ -116,38 +93,55 @@ class ChatManager:
                     )
                 else:
                     self.current_setting = None
-                    logger.error("No matching stored setting and no default setting found. No setting applied.")
+                    logger.error("No settings available to set as default.")
+            else:
+                stored_setting = self.db.get_current_setting(self.session_id)
+                if stored_setting and stored_setting in self.settings:
+                    setting = self.settings[stored_setting]
+                    self.set_current_setting(
+                        setting['name'],
+                        self.db.get_current_setting_description(self.session_id) or setting['description'],
+                        self.db.get_current_location(self.session_id) or setting['start_location']
+                    )
+                else:
+                    if settings:
+                        default_setting = settings[0]
+                        self.set_current_setting(
+                            default_setting['name'],
+                            default_setting['description'],
+                            default_setting['start_location']
+                        )
+                    else:
+                        self.current_setting = None
+                        logger.error("No matching stored setting and no default setting found. No setting applied.")
 
-        self.llm_client = llm_client
+            self.llm_client = llm_client
 
-        # --- NEW: Load and store session-level toggle settings ---
-        session_settings = self.db.get_session_settings(self.session_id)
-        self.model_selection = session_settings.get('model_selection', '')
-        self.npc_manager_active = session_settings.get('npc_manager_active', False)
-        self.auto_chat = session_settings.get('auto_chat', False)
-        self.show_private_info = session_settings.get('show_private_info', True)
-        # Default NPC Manager is now inactive (False) unless restored from session settings.
-        if self.npc_manager_active:
-            self.npc_manager = NPCManager(
-                session_id=self.session_id,
-                db=self.db,
-                llm_client=llm_client
+            # --- Load session-level toggle settings (auto chat removed) ---
+            session_settings = self.db.get_session_settings(self.session_id)
+            self.model_selection = session_settings.get('model_selection', '')
+            self.npc_manager_active = session_settings.get('npc_manager_active', False)
+            self.show_private_info = session_settings.get('show_private_info', True)
+            if self.npc_manager_active:
+                self.npc_manager = NPCManager(
+                    session_id=self.session_id,
+                    db=self.db,
+                    llm_client=llm_client
+                )
+            else:
+                self.npc_manager = None
+
+            self.llm_status_callback = None
+            self._introduction_given: Dict[str, bool] = {}
+            self.introduction_counter = 0
+            self.introduction_sequence = {}
+            self.initialize_introduction_status()
+
+            self.auto_prompt_generation_interval = self.config.get('auto_prompt_generation_interval', 0)
+
+            self.image_manager = ImageManager(
+                config_path=os.path.join("src", "multipersona_chat_app", "config", "image_manager_config.yaml")
             )
-        else:
-            self.npc_manager = None
-
-        self.llm_status_callback = None
-        # Track introduction status locally
-        self._introduction_given: Dict[str, bool] = {}
-        self.introduction_counter = 0
-        self.introduction_sequence = {}
-        self.initialize_introduction_status()
-
-        self.auto_prompt_generation_interval = self.config.get('auto_prompt_generation_interval', 0)
-
-        self.image_manager = ImageManager(
-            config_path=os.path.join("src", "multipersona_chat_app", "config", "image_manager_config.yaml")
-        )
         
     @staticmethod
     def load_config(config_path: str) -> dict:
@@ -1291,14 +1285,10 @@ class ChatManager:
     ) -> Optional[Interaction]:
         """
         Checks the generated interaction (action + dialogue) for excessive similarity
-        to the character's own recent messages and to each other. If violations are
-        detected, we attempt to regenerate a new interaction up to `max_similarity_retries`
-        times. Detailed logging is performed to identify each failed check, including
-        which texts were compared and which similarity threshold(s) were exceeded.
-        
-        The appended warning text (passed along with the dynamic_prompt on regeneration)
-        explains functionally how the content should be changed to be less repetitive
-        (without referencing the actual similarity metrics).
+        to the character's own recent messages and between its own fields.
+        If violations are detected, regeneration is attempted up to
+        `max_similarity_retries` times. If no candidate passes all checks,
+        the candidate with the lowest similarity (i.e. most dissimilar) score is returned.
         """
         all_visible = self.db.get_visible_messages_for_character(self.session_id, character_name)
         same_speaker_lines = [m for m in all_visible if m["sender"] == character_name]
@@ -1311,6 +1301,9 @@ class ChatManager:
         tries = 0
         max_tries = self.max_similarity_retries
         current_interaction = interaction
+
+        best_candidate = current_interaction
+        best_score = float('inf')
 
         while True:
             action_text = current_interaction.action
@@ -1349,7 +1342,6 @@ class ChatManager:
                     "Your action text should not simply restate the entire dialogue."
                 )
 
-            # Prepare embeddings for similarity checks
             if self.llm_status_callback:
                 await self.llm_status_callback(
                     f"[RepetitionCheck] Computing embeddings (attempt {tries + 1}) for {character_name}."
@@ -1360,7 +1352,7 @@ class ChatManager:
             combined_text = action_text + " " + dialogue_text
             actiondialogue_embedding = embed_client.get_embedding(combined_text)
 
-            # 4) Compare action vs. dialogue similarity
+            # 4) Compare action vs. dialogue similarity.
             cos_sim_action_dialogue = embed_client.compute_cosine_similarity(action_embedding, dialogue_embedding)
             jac_sim_action_dialogue = embed_client.compute_jaccard_similarity(action_text, dialogue_text)
             logger.debug(
@@ -1378,66 +1370,78 @@ class ChatManager:
                     "Your action and dialogue read almost the same. Please differentiate them."
                 )
 
-            # 5) Compare current action/dialogue to recent lines from the same speaker
-            if not violation_detected:
-                for line_obj in recent_speaker_lines:
-                    old_msg = line_obj["message"]
-                    old_embedding = embed_client.get_embedding(old_msg)
+            # 5) Compare current action/dialogue to recent lines from the same speaker.
+            for line_obj in recent_speaker_lines:
+                old_msg = line_obj["message"]
+                old_embedding = embed_client.get_embedding(old_msg)
 
-                    cos_sim_action = embed_client.compute_cosine_similarity(action_embedding, old_embedding)
-                    cos_sim_dialogue = embed_client.compute_cosine_similarity(dialogue_embedding, old_embedding)
-                    cos_sim_both = embed_client.compute_cosine_similarity(actiondialogue_embedding, old_embedding)
+                cos_sim_action = embed_client.compute_cosine_similarity(action_embedding, old_embedding)
+                cos_sim_dialogue = embed_client.compute_cosine_similarity(dialogue_embedding, old_embedding)
+                cos_sim_both = embed_client.compute_cosine_similarity(actiondialogue_embedding, old_embedding)
 
-                    jac_sim_action = embed_client.compute_jaccard_similarity(action_text, old_msg)
-                    jac_sim_dialogue = embed_client.compute_jaccard_similarity(dialogue_text, old_msg)
-                    jac_sim_both = embed_client.compute_jaccard_similarity(combined_text, old_msg)
+                jac_sim_action = embed_client.compute_jaccard_similarity(action_text, old_msg)
+                jac_sim_dialogue = embed_client.compute_jaccard_similarity(dialogue_text, old_msg)
+                jac_sim_both = embed_client.compute_jaccard_similarity(combined_text, old_msg)
 
-                    logger.debug(
-                        f"[{character_name}] Comparing current action/dialogue to a recent line:\n"
-                        f"  Current vs old_msg='{old_msg[:60]}...' => "
-                        f"cos_action={cos_sim_action:.3f}, cos_dialogue={cos_sim_dialogue:.3f}, "
-                        f"cos_combined={cos_sim_both:.3f} | "
-                        f"jac_action={jac_sim_action:.3f}, jac_dialogue={jac_sim_dialogue:.3f}, "
-                        f"jac_combined={jac_sim_both:.3f}"
+                logger.debug(
+                    f"[{character_name}] Comparing current action/dialogue to a recent line:\n"
+                    f"  Current vs old_msg='{old_msg[:60]}...' => "
+                    f"cos_action={cos_sim_action:.3f}, cos_dialogue={cos_sim_dialogue:.3f}, "
+                    f"cos_combined={cos_sim_both:.3f} | "
+                    f"jac_action={jac_sim_action:.3f}, jac_dialogue={jac_sim_dialogue:.3f}, "
+                    f"jac_combined={jac_sim_both:.3f}"
+                )
+
+                if (cos_sim_action >= self.similarity_threshold or
+                    jac_sim_action >= self.similarity_threshold or
+                    cos_sim_dialogue >= self.similarity_threshold or
+                    jac_sim_dialogue >= self.similarity_threshold or
+                    cos_sim_both >= self.similarity_threshold or
+                    jac_sim_both >= self.similarity_threshold):
+                    logger.warning(
+                        f"[{character_name}] Check failed: output is too similar to a recent line "
+                        f"(cos or jac >= {self.similarity_threshold})."
                     )
+                    violation_detected = True
+                    violation_reasons.append(
+                        "Your new message closely duplicates your own recent statements. Please vary it."
+                    )
+                    break
 
-                    if (
-                        cos_sim_action >= self.similarity_threshold or
-                        jac_sim_action >= self.similarity_threshold or
-                        cos_sim_dialogue >= self.similarity_threshold or
-                        jac_sim_dialogue >= self.similarity_threshold or
-                        cos_sim_both >= self.similarity_threshold or
-                        jac_sim_both >= self.similarity_threshold
-                    ):
-                        logger.warning(
-                            f"[{character_name}] Check failed: output is too similar to a recent line "
-                            f"(cos or jac >= {self.similarity_threshold})."
-                        )
-                        violation_detected = True
-                        violation_reasons.append(
-                            "Your new message closely duplicates your own recent statements. Please vary it."
-                        )
-                        break
+            # Compute a similarity score for the current candidate (lower is better).
+            candidate_score = max(cos_sim_action_dialogue, jac_sim_action_dialogue)
+            for line_obj in recent_speaker_lines:
+                old_msg = line_obj["message"]
+                old_embedding = embed_client.get_embedding(old_msg)
+                score_line = max(
+                    embed_client.compute_cosine_similarity(action_embedding, old_embedding),
+                    embed_client.compute_cosine_similarity(dialogue_embedding, old_embedding),
+                    embed_client.compute_cosine_similarity(actiondialogue_embedding, old_embedding),
+                    embed_client.compute_jaccard_similarity(action_text, old_msg),
+                    embed_client.compute_jaccard_similarity(dialogue_text, old_msg),
+                    embed_client.compute_jaccard_similarity(combined_text, old_msg)
+                )
+                candidate_score = max(candidate_score, score_line)
 
-            # If no violation, return the current_interaction as valid.
+            if candidate_score < best_score:
+                best_score = candidate_score
+                best_candidate = current_interaction
+
             if not violation_detected:
                 logger.debug(f"[{character_name}] All repetition checks passed; output is acceptable.")
                 return current_interaction
 
-            # If violations, attempt regeneration if we haven't exhausted tries.
             tries += 1
             if tries > max_tries:
                 logger.warning(
                     f"[{character_name}] Exceeded maximum regeneration attempts ({max_tries}). "
-                    "Returning None."
+                    f"Returning best candidate with similarity score {best_score:.3f}."
                 )
-                return None
+                return best_candidate
 
-            # Build a user-facing appended warning that explains functionally how to revise.
             appended_warning = (
-                "\nBelow are the issues we found:\n- "
-                + "\n- ".join(violation_reasons)
-                + "\n\nPlease revise your response to avoid these issues. "
+                "\nBelow are the issues we found:\n- " + "\n- ".join(violation_reasons) +
+                "\n\nPlease revise your response to avoid these issues. "
                 "Improve or vary the wording so it's not overly similar to previous statements, "
                 "doesn't repeat dialogue in the action, and doesn't include placeholders.\n"
             )
@@ -1458,7 +1462,6 @@ class ChatManager:
             if self.llm_client:
                 regen_client.set_user_selected_model(self.llm_client.user_selected_model)
 
-            # Append warning to the dynamic prompt
             revised_prompt = dynamic_prompt + appended_warning
             new_interaction = await asyncio.to_thread(
                 regen_client.generate,
@@ -1471,11 +1474,10 @@ class ChatManager:
                 logger.warning(
                     f"[{character_name}] Regeneration attempt returned invalid output. Stopping."
                 )
-                return None
+                return best_candidate
 
             current_interaction = new_interaction
-
-            # Then loop again to re-check new_interaction.
+            # Loop again to re-check the new interaction.
 
 
     def character_has_introduced(self, candidate_char_name: str) -> bool:

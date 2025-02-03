@@ -337,6 +337,10 @@ def load_session(session_id: str):
     npc_switch.update()
     auto_switch.update()
     local_model_dropdown.update()
+    
+    logger.info(f"Session {session_id} loaded. Model selection: {session_settings.get('model_selection', '')}, "
+                f"NPC Manager Active: {session_settings.get('npc_manager_active', False)}, "
+                f"Show Private Info: {session_settings.get('show_private_info', True)}. Automatic chat forced off.")
 
     # --- Do not auto-activate auto chat on session load ---
     chat_manager.stop_automatic_chat()
@@ -405,7 +409,6 @@ def select_setting(event):
 def toggle_automatic_chat(e):
     if e.value:
         if not chat_manager.get_character_names():
-            # Use a synchronous call to add a notification to avoid 'no running event loop' error.
             notification_queue.put_nowait(("No characters added. Cannot start automatic chat.", 'warning'))
             e.value = False
             return
@@ -416,9 +419,7 @@ def toggle_automatic_chat(e):
         chat_manager.stop_automatic_chat()
         if auto_timer:
             auto_timer.active = False
-    current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
-    current_settings['auto_chat'] = e.value
-    chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"Automatic chat toggle changed to {e.value}.")
 
 
 def toggle_npc_manager(value: bool):
@@ -429,6 +430,7 @@ def toggle_npc_manager(value: bool):
     current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
     current_settings['npc_manager_active'] = value
     chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"NPC Manager toggle changed to {value}. Settings updated.")
 
 
 def toggle_show_private_info(value: bool):
@@ -437,6 +439,7 @@ def toggle_show_private_info(value: bool):
     current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
     current_settings['show_private_info'] = value
     chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"Show Private Info toggle changed to {value}. Settings updated.")
     show_character_details.refresh()
     show_chat_display.refresh()
 
@@ -581,6 +584,7 @@ def on_local_model_select(event):
     if not chosen:
         llm_client.set_user_selected_model(None)
         introduction_llm_client.set_user_selected_model(None)
+        logger.info("Local model cleared.")
         return
 
     llm_client.set_user_selected_model(chosen)
@@ -589,6 +593,8 @@ def on_local_model_select(event):
     current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
     current_settings['model_selection'] = chosen
     chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"Local model changed to {chosen}. Session settings updated.")
+
 
 def main_page():
     global character_dropdown, added_characters_container
