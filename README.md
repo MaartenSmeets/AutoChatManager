@@ -2,6 +2,11 @@
 
 The **Multipersona Chat Manager** is a conversational application that simulates a multi-character dialogue using large language model (LLM) backends. It supports dynamic character interactions, automatic chat generation, non-player character (NPC) creation, image prompt generation, conversation summarization, and dynamic plan updates for each character—all integrated into a web‐based interface.
 
+![Screenshot from 2025-01-22 21-00-24](https://github.com/user-attachments/assets/9abd0139-3fc7-41d8-a2b5-8eadb2a33c8f)
+
+| ![Screenshot 1](https://github.com/user-attachments/assets/2e97038f-69f1-466b-a2f4-f3e74644c447) | ![Screenshot 2](https://github.com/user-attachments/assets/fcb5d55a-bc0f-4bc3-9ca9-84f64a5fcd8d) | ![Screenshot 3](https://github.com/user-attachments/assets/c5168285-68cb-4376-992c-a1875459b85f) |
+|--------------------------------------------------------------|--------------------------------------------------------------|--------------------------------------------------------------|
+
 ## Overview
 
 This project allows you to:
