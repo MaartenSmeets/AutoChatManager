@@ -13,14 +13,14 @@ import traceback
 CONFIG_SDWEBUI_SERVER_URL = "http://127.0.0.1:7860"
 
 # Model to use in SD WebUI
-CONFIG_SDWEBUI_MODEL = "prefectPonyXL_v50.safetensors"
+CONFIG_SDWEBUI_MODEL = "cyberrealisticPony_v8.safetensors"
 
 # Content to prepend to every prompt (formerly CONFIG_SDWEBUI_LORA)
-CONFIG_SDWEBUI_PREPEND = "score_9, score_8_up, score_7_up, source_anime"
+CONFIG_SDWEBUI_PREPEND = "score_9, score_8_up, score_7_up, realistic"
 
 # Negative prompt
 CONFIG_NEGATIVE = (
-    "worst quality,bad quality,jpeg artifacts, source_cartoon, 3d, (censor),monochrome,blurry, lowres,watermark"
+    "score_6, score_5, score_4, (worst quality:1.2), (low quality:1.2), (normal quality:1.2), lowres, bad anatomy, bad hands, signature, watermarks, ugly, imperfect eyes, skewed eyes, unnatural face, unnatural body, error, extra limb, missing limbs"
 )
 
 # Sampler and model inference settings
@@ -53,7 +53,7 @@ SDWEBUI_PAYLOAD_TEMPLATE = """{
         "negative_prompt": "",
         "seed": -1,
         "override_settings": {
-            "sd_model_checkpoint": "iniverse_v1.safetensors",
+            "sd_model_checkpoint": "cyberrealisticPony_v8.safetensors",
             "CLIP_stop_at_last_layers": "2"
         },
         "override_settings_restore_afterwards": true,
