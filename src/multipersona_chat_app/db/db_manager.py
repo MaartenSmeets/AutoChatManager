@@ -33,14 +33,17 @@ class DBManager:
         conn = self._ensure_connection()
         c = conn.cursor()
 
-        # sessions table
+        # sessions table (updated to include model selection and toggle settings)
         c.execute('''
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 current_setting TEXT,
                 current_location TEXT,
-                setting_description TEXT
+                setting_description TEXT,
+                model_selection TEXT DEFAULT '',
+                npc_manager_active INTEGER DEFAULT 0,
+                show_private_info INTEGER DEFAULT 1
             )
         ''')
 
@@ -1010,3 +1013,38 @@ class DBManager:
                 }
         return None
 
+    def get_session_settings(self, session_id: str) -> Dict[str, Any]:
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            SELECT model_selection, npc_manager_active, show_private_info
+            FROM sessions
+            WHERE session_id = ?
+        ''', (session_id,))
+        row = c.fetchone()
+        conn.close()
+        if row:
+            return {
+                'model_selection': row[0] or '',
+                'npc_manager_active': bool(row[1]),
+                'show_private_info': bool(row[2])
+            }
+        return {'model_selection': '', 'npc_manager_active': False, 'show_private_info': True}
+
+    def update_session_settings(self, session_id: str, settings: Dict[str, Any]):
+        conn = self._ensure_connection()
+        c = conn.cursor()
+        c.execute('''
+            UPDATE sessions
+            SET model_selection = ?,
+                npc_manager_active = ?,
+                show_private_info = ?
+            WHERE session_id = ?
+        ''', (
+            settings.get('model_selection', ''),
+            1 if settings.get('npc_manager_active', False) else 0,
+            1 if settings.get('show_private_info', True) else 0,
+            session_id
+        ))
+        conn.commit()
+        conn.close()

@@ -1,0 +1,57 @@
+system_prompt: |
+  You are an expert image prompt engineer specializing in creating precise, compelling prompts for AI art generation. Your expertise lies in:
+  1. Translating narrative descriptions into structured visual elements using Danbooru-style tags
+  2. Balancing technical specificity with artistic interpretation while prioritizing tag accuracy
+  3. Optimizing prompt structure for consistent, high-quality results in AI art generation
+  4. Maintaining artistic coherence while preserving creative flexibility
+
+  Your goal is to transform scene descriptions into prompts that consistently produce high-quality, cohesive artwork while maintaining creative integrity and technical precision. **Use Danbooru tags whenever possible instead of natural language descriptions.** Ensure tags are relevant and correctly formatted.
+  
+user_prompt_template: |
+  Create a visually optimized prompt using Danbooru-style tags by analyzing and transforming these elements:
+
+  1. Character Focus:
+     - Convert character descriptions into **Danbooru tags** (e.g., `blonde hair, blue eyes, twintails` instead of “a girl with blonde hair and blue eyes”)
+     - Use **accurate, specific tags** for anatomy, expressions, and poses (`smiling, dynamic pose, looking at viewer`)
+     - Include **clothing and accessories** using tags (`school uniform, thighhighs, ribbon, choker`)
+     - When describing characters, avoid names unless referring to well-known figures (such as celebrities or famous anime characters). **Use Danbooru tags for defining features instead.**
+
+  2. Scene Elements:
+     - Identify and describe the **environmental features using tags** (`sunset, cityscape, cherry blossoms, detailed background`)
+     - Highlight important objects and their relationship to characters using **tag-based descriptions** (`book, floating petals, glowing sword`)
+     - Emphasize lighting and atmospheric effects using appropriate **Danbooru tags** (`soft lighting, dramatic lighting, lens flare`)
+     - Consider depth, scale, and spatial relationships with **relevant tags** (`wide shot, dutch angle, depth of field`)
+
+  3. Artistic Direction:
+     - Incorporate mood and emotional undertones using **Danbooru-style mood tags** (`serene, melancholic, intense gaze`)
+     - Suggest composition and framing with relevant tags (`close-up, over-the-shoulder shot, extreme perspective`)
+     - Define the overall artistic style using **accurate tags** (`watercolor, digital painting, anime style, sketch-like shading`)
+     - Include relevant **artistic references** (`Makoto Shinkai inspired, Studio Ghibli aesthetics`)
+
+  Source Information:
+
+  Latest in-world events:
+  {recent_dialogue}
+
+  Characters: 
+  {characters}
+
+  General setting: 
+  {setting}
+
+  Moral Guidelines: 
+  {moral_guidelines}
+
+  Previous Summaries:
+  {previous_summaries}
+
+  Output Guidelines:
+  - Use **Danbooru-style tags** separated by commas
+  - Start with the most important **visual elements and subjects**
+  - Progress from **main subject to supporting details**
+  - End with **style and mood descriptors**
+  - Ensure the final prompt is between 100 and 200 words
+  - Keep tags **accurate, specific, and concise**
+  - Avoid **abstract concepts or non-visual elements**
+
+max_concise_retries: 3

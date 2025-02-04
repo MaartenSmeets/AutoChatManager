@@ -13,9 +13,7 @@ from models.character import Character
 from chats.chat_manager import ChatManager
 from utils import load_settings, get_available_characters, remove_markdown
 from templates import (
-    CharacterIntroductionOutput,
-    INTRODUCTION_TEMPLATE,
-    CHARACTER_INTRODUCTION_SYSTEM_PROMPT_TEMPLATE
+    CharacterIntroductionOutput
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +48,8 @@ show_private_info = True
 # NEW DROPDOWN for local models
 local_model_dropdown = None
 
+npc_switch = None
+auto_switch = None
 # -----------------------------------------------------------------------------
 # NEW/UPDATED: A dedicated queue and helper to show real-time LLM status
 # -----------------------------------------------------------------------------
@@ -89,16 +89,19 @@ def init_chat_manager(session_id: str, settings: List[Dict]):
     # Register an LLM status callback on chat_manager so it can push messages via push_llm_status(...)
     chat_manager.set_llm_status_callback(push_llm_status)
 
-def toggle_npc_manager(value: bool):
-    if value:
-        chat_manager.npc_manager = NPCManager(
-            session_id=chat_manager.session_id,
-            db=chat_manager.db,
-            llm_client=chat_manager.llm_client
-        )
-    else:
-        chat_manager.npc_manager = None
-
+def toggle_npc_manager(event):
+    """
+    Called when user flips the 'NPC Manager Active' switch in the UI.
+    """
+    if event.value:  # Switch turned ON
+        logger.info("NPC Manager enabled.")
+        chat_manager.enable_npc_manager()
+    else:            # Switch turned OFF
+        logger.info("NPC Manager disabled.")
+        chat_manager.disable_npc_manager()
+    current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
+    current_settings['npc_manager_active'] = event.value
+    chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
 
 def refresh_added_characters():
     if added_characters_container is not None:
@@ -271,6 +274,7 @@ def delete_session(_):
 
 
 def load_session(session_id: str):
+    global npc_switch, auto_switch, local_model_dropdown
     global is_session_being_loaded
     is_session_being_loaded = True
 
@@ -282,13 +286,12 @@ def load_session(session_id: str):
     stored_start_location = chat_manager.db.get_current_location(session_id) or ""
     chat_msgs = chat_manager.db.get_messages(session_id)
 
-    # If recognized setting in YAML, re-apply it
     setting = next((s for s in ALL_SETTINGS if s['name'] == current_setting_name), None)
     if setting:
         chat_manager.set_current_setting(
             setting['name'],
             stored_description if stored_description.strip() else setting['description'],
-            setting['start_location']
+            stored_start_location
         )
         settings_dropdown.value = setting['name']
     else:
@@ -323,25 +326,56 @@ def load_session(session_id: str):
     setting_description_label.update()
     current_location_label.update()
 
-    # Add all previously added characters
+    # --- Restore toggle settings from session ---
+    session_settings = chat_manager.db.get_session_settings(session_id)
+    local_model_dropdown.value = session_settings.get('model_selection', '')
+    npc_switch.value = session_settings.get('npc_manager_active', False)
+    # Force auto chat to be off on session load
+    auto_switch.value = False
+    global show_private_info
+    show_private_info = session_settings.get('show_private_info', True)
+    npc_switch.update()
+    auto_switch.update()
+    local_model_dropdown.update()
+    
+    logger.info(f"Session {session_id} loaded. Model selection: {session_settings.get('model_selection', '')}, "
+                f"NPC Manager Active: {session_settings.get('npc_manager_active', False)}, "
+                f"Show Private Info: {session_settings.get('show_private_info', True)}. Automatic chat forced off.")
+
+    # --- Do not auto-activate auto chat on session load ---
+    chat_manager.stop_automatic_chat()
+    if auto_timer:
+        auto_timer.active = False
+
+    # Apply NPC Manager setting from the session.
+    if session_settings.get('npc_manager_active', False):
+        chat_manager.enable_npc_manager()
+    else:
+        chat_manager.disable_npc_manager()
+
+    chat_manager.model_selection = session_settings.get('model_selection', '')
+    if chat_manager.model_selection:
+        llm_client.set_user_selected_model(chat_manager.model_selection)
+        introduction_llm_client.set_user_selected_model(chat_manager.model_selection)
+
+    # Add all previously added characters.
     session_chars = chat_manager.db.get_session_characters(session_id)
     for c_name in session_chars:
         if c_name in ALL_CHARACTERS:
             chat_manager.add_character(c_name, ALL_CHARACTERS[c_name])
 
+    chat_manager.restore_turn_index_from_db()
     refresh_added_characters()
     show_chat_display.refresh()
     show_character_details.refresh()
     populate_session_dropdown()
 
-    # Disable setting dropdown if session already has messages
+    # Disable settings if session already has messages.
     has_msgs = len(chat_msgs) > 0
     settings_dropdown.disabled = has_msgs
     settings_dropdown.update()
-    settings_expansion.value = has_msgs # Collapse settings after session start
 
     is_session_being_loaded = False
-
 
 def select_setting(event):
     if is_session_being_loaded:
@@ -375,7 +409,7 @@ def select_setting(event):
 def toggle_automatic_chat(e):
     if e.value:
         if not chat_manager.get_character_names():
-            asyncio.create_task(notification_queue.put(("No characters added. Cannot start automatic chat.", 'warning')))
+            notification_queue.put_nowait(("No characters added. Cannot start automatic chat.", 'warning'))
             e.value = False
             return
         chat_manager.start_automatic_chat()
@@ -385,6 +419,7 @@ def toggle_automatic_chat(e):
         chat_manager.stop_automatic_chat()
         if auto_timer:
             auto_timer.active = False
+    logger.info(f"Automatic chat toggle changed to {e.value}.")
 
 
 def toggle_npc_manager(value: bool):
@@ -392,11 +427,19 @@ def toggle_npc_manager(value: bool):
         chat_manager.enable_npc_manager()
     else:
         chat_manager.disable_npc_manager()
+    current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
+    current_settings['npc_manager_active'] = value
+    chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"NPC Manager toggle changed to {value}. Settings updated.")
 
 
 def toggle_show_private_info(value: bool):
     global show_private_info
     show_private_info = value
+    current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
+    current_settings['show_private_info'] = value
+    chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"Show Private Info toggle changed to {value}. Settings updated.")
     show_character_details.refresh()
     show_chat_display.refresh()
 
@@ -495,6 +538,17 @@ async def update_all_characters_info():
     show_chat_display.refresh()
     show_character_details.refresh()
 
+async def generate_scene_prompt_async():
+    """
+    Trigger a manual generation of the concise scene/character description 
+    for image generation, showing LLM status in real-time.
+    """
+    if not chat_manager:
+        ui.notify("ChatManager not initialized.", type='warning')
+        return
+    await chat_manager.generate_scene_prompt()
+    show_chat_display.refresh()
+    show_character_details.refresh()
 
 async def consume_llm_status():
     while not llm_status_queue.empty():
@@ -511,11 +565,20 @@ async def refresh_local_models():
     models = llm_client.list_local_models()
     local_model_dropdown.options = models
     local_model_dropdown.update()
-    if models:
+    # Instead of using the dropdown’s current value, read the stored model from session settings.
+    session_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
+    stored = session_settings.get('model_selection', '')
+    if stored and stored in models:
+        local_model_dropdown.value = stored
+        on_local_model_select({"value": stored})
+    elif stored:
+        ui.notify(f"Stored model '{stored}' is not available. Reverting to first available model.", type="warning")
         local_model_dropdown.value = models[0]
-        local_model_dropdown.update()
         on_local_model_select({"value": models[0]})
-
+    elif models:
+        local_model_dropdown.value = models[0]
+        on_local_model_select({"value": models[0]})
+    local_model_dropdown.update()
 
 def on_local_model_select(event):
     if isinstance(event, dict):
@@ -526,10 +589,16 @@ def on_local_model_select(event):
     if not chosen:
         llm_client.set_user_selected_model(None)
         introduction_llm_client.set_user_selected_model(None)
+        logger.info("Local model cleared.")
         return
 
     llm_client.set_user_selected_model(chosen)
     introduction_llm_client.set_user_selected_model(chosen)
+    # Update session settings with the chosen model.
+    current_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
+    current_settings['model_selection'] = chosen
+    chat_manager.db.update_session_settings(chat_manager.session_id, current_settings)
+    logger.info(f"Local model changed to {chosen}. Session settings updated.")
 
 
 def main_page():
@@ -537,14 +606,14 @@ def main_page():
     global settings_dropdown, setting_description_label
     global session_dropdown, chat_display, current_location_label, llm_status_label
     global character_details_display, settings_expansion, session_expansion, model_expansion, toggles_expansion
-    global local_model_dropdown
+    global local_model_dropdown, npc_switch, auto_switch
     global ALL_CHARACTERS, ALL_SETTINGS
 
     ALL_CHARACTERS = get_available_characters("src/multipersona_chat_app/characters")
     ALL_SETTINGS = load_settings()
 
-    with ui.grid(columns=2).style('grid-template-columns: 350px 1fr; height: 100vh;'): # Adjusted column width for settings
-        with ui.card().style('height: 100vh; overflow-y: auto; padding: 16px; display: flex; flex-direction: column;'): # Added padding and flex layout
+    with ui.grid(columns=2).style('grid-template-columns: 350px 1fr; height: 100vh;'):
+        with ui.card().style('height: 100vh; overflow-y: auto; padding: 16px; display: flex; flex-direction: column;'):
             ui.label('Multipersona Chat Application').classes('text-2xl font-bold mb-4')
 
             settings_expansion = ui.expansion('Session & Model Settings', icon='settings').props('group="settings-group"').classes('w-full mb-4')
@@ -579,9 +648,9 @@ def main_page():
                         label="Choose setting"
                     ).classes('flex-grow')
 
-                with ui.row().classes('w-full wrap items-start mb-2'): # Adjusted to wrap and items-start
-                    ui.label("Setting Description:").classes('w-full') # Full width label
-                    setting_description_label = ui.label("(Not set)").classes('text-gray-700 w-full') # Full width description, wrap text
+                with ui.row().classes('w-full wrap items-start mb-2'):
+                    ui.label("Setting Description:").classes('w-full')
+                    setting_description_label = ui.label("(Not set)").classes('text-gray-700 w-full')
 
                 with ui.row().classes('w-full items-center mb-4'):
                     current_location_label = ui.label("").classes('text-gray-700')
@@ -590,40 +659,43 @@ def main_page():
             with toggles_expansion:
                 with ui.row().classes('w-full items-center mb-2'):
                     auto_switch = ui.switch('Automatic Chat', value=False, on_change=toggle_automatic_chat).classes('mr-2')
-                    npc_switch = ui.switch('NPC Manager Active', value=True, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
+                    npc_switch = ui.switch('NPC Manager Active', value=False, on_change=lambda e: toggle_npc_manager(e.value)).classes('mr-2')
                     private_info_switch = ui.switch('Show Private Info', value=True, on_change=lambda e: toggle_show_private_info(e.value)).classes('mr-2')
 
-
             with ui.column().classes('w-full mb-4'):
-                ui.label("Characters").classes('text-lg font-semibold mb-2') # More prominent label
-                with ui.row().classes('w-full items-center mb-2'): # Row for dropdown and label
+                ui.label("Characters").classes('text-lg font-semibold mb-2')
+                with ui.row().classes('w-full items-center mb-2'):
                     ui.label("Add Character:").classes('w-1/3')
                     character_dropdown = ui.select(
                         options=list(ALL_CHARACTERS.keys()),
                         on_change=lambda e: asyncio.create_task(add_character_from_dropdown(e)),
                         label="Choose character"
                     ).classes('flex-grow')
-
-                added_characters_container = ui.row().classes('flex-wrap gap-2') # Chips container
+                added_characters_container = ui.row().classes('flex-wrap gap-2')
                 refresh_added_characters()
 
             ui.button(
                 "Update All Character Info",
                 on_click=lambda: asyncio.create_task(update_all_characters_info()),
                 icon='sync'
-            ).props('outline').classes('mt-2 w-full') # Full width button, more descriptive text
+            ).props('outline').classes('mt-2 w-full')
+
+            ui.button(
+                "Generate Scene Prompt",
+                on_click=lambda: asyncio.create_task(generate_scene_prompt_async()),
+                icon='image'
+            ).props('outline').classes('w-full')
 
             global llm_status_label
             llm_status_label = ui.label("").classes('text-orange-600 mt-2')
             llm_status_label.visible = False
 
-            character_details_display = ui.column().classes('mt-4 w-full') # Added margin top
+            character_details_display = ui.column().classes('mt-4 w-full')
             show_character_details()
 
-
-        with ui.card().style('height: 100vh; display: flex; flex-direction: column; padding: 16px;').classes('shadow-md'): # Added padding and shadow
+        with ui.card().style('height: 100vh; display: flex; flex-direction: column; padding: 16px;').classes('shadow-md'):
             global chat_display
-            chat_display = ui.column().style('flex-grow: 1; overflow-y: auto;').classes('p-4') # Added padding to chat display
+            chat_display = ui.column().style('flex-grow: 1; overflow-y: auto;').classes('p-4')
             show_chat_display()
 
     session_dropdown.on('change', on_session_select)
@@ -634,9 +706,7 @@ def main_page():
     auto_timer = ui.timer(interval=2.0, callback=lambda: asyncio.create_task(automatic_conversation()), active=False)
 
     ui.timer(1.0, consume_notifications, active=True)
-    # Timer to consume LLM status messages
     ui.timer(0.5, consume_llm_status, active=True)
-    # Kick off local model refresh once
     ui.timer(0.5, refresh_local_models, active=True, once=True)
 
 def start_ui():

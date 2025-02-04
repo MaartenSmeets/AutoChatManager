@@ -134,7 +134,12 @@ class OllamaClient:
         """
         Perform the actual streaming request to the Ollama /api/generate endpoint
         using a specific model_name. If it fails, return None.
+
+        This function also checks `skip_system_prompt` in the config. If true,
+        the system prompt is not sent as 'system' but instead prepended to the
+        user prompt. 
         """
+        # Check cache first, if enabled
         if use_cache:
             cached_response = self.cache_manager.get_cached_response(prompt, model_name)
             if cached_response is not None:
@@ -148,12 +153,21 @@ class OllamaClient:
                 else:
                     return cached_response
 
+        # Prepare headers
         headers = {
             'Content-Type': 'application/json',
         }
         api_key = self.config.get('api_key')
         if api_key:
             headers['Authorization'] = f'Bearer {api_key}'
+
+        # Decide whether to skip the system prompt
+        skip_system_prompt = self.config.get('skip_system_prompt', False)
+        if skip_system_prompt and system:
+            # Prepend the system text to the user prompt
+            prompt = f"{system}\n\n{prompt}"
+            # We do NOT set 'system' in the payload
+            system = None
 
         payload = {
             'model': model_name,
@@ -164,6 +178,7 @@ class OllamaClient:
             }
         }
 
+        # If we still have a system prompt to send, include it
         if system:
             payload['system'] = system
 
@@ -219,8 +234,6 @@ class OllamaClient:
                             if self.output_model:
                                 try:
                                     parsed_output = self.output_model.model_validate_json(output)
-                                    # Log the structured output at INFO level
-                                    #logger.info("Final parsed output (structured) stored in cache.")
                                     logger.info(f"Structured Output: {parsed_output.dict()}")
                                     if use_cache:
                                         self.cache_manager.store_response(prompt, model_name, output)

@@ -15,6 +15,7 @@ class IntroductionAppearanceSegments(BaseModel):
 class CharacterIntroductionOutput(BaseModel):
     introduction_text: str
     current_appearance: IntroductionAppearanceSegments
+    current_location: str
 
 INTRODUCTION_TEMPLATE = r"""
 You are {character_name}. Present a **static snapshot** introduction of your current appearance. 
@@ -45,9 +46,10 @@ Provide a comprehensive and **static** description of your outward state, with a
   - **Accessories and Held Items:** Bracelets, hats, glasses, handheld objects, etc.
   - **Posture and Body Language:** A still pose or stance—no ongoing actions.
   - **Other Relevant Details:** Facial expressions, skin details, or other visible traits.
-
+- **Current location**
+  - Describe your immediate surroundings in the setting.
 - **No New Interaction**:
-  - Avoid mentioning or interacting with other characters unless they are confirmed to have introduced themselves first.
+  - Avoid mentioning or interacting with other characters unless they have participated in 'Latest Dialogue' or 'Most Recent Chat'.
 
 Keep the description vivid but not overly long, aiming for clear visualization of a single moment in time.
 """
@@ -85,7 +87,8 @@ Plan step to incorporate: {plan_first_step}
   - "posture_and_body_language"
   - "facial_expression"
   - "other_relevant_details"
-- Each subfield in **"current_appearance"** is mandatory.
+- **current_location** must be included in the introduction.
+- Each subfield in **"current_appearance"** is mandatory. current_location is mandatory.
 - The overall introduction must be consistent with the environment and the character's background.
 - **No mention of invisible details** or new location elements—only what's outwardly perceivable.
 
@@ -106,7 +109,8 @@ Produce a JSON object with the following structure:
     "posture_and_body_language": "<Describe {character_name}'s current posture or still pose>",
     "facial_expression": "<Describe {character_name}'s facial expression>",
     "other_relevant_details": "<Describe any other immediately visible features of {character_name}>"
-  }}
+  }},
+  "current_location": "<Describe {character_name}'s immediate surroundings in the setting>"
 }}
 
 Note: Fields enclosed in angle brackets (<...>) are placeholders. When generating output, do not include the angle brackets. Replace the placeholder text with detailed content that fits the context. 
@@ -121,7 +125,8 @@ Example output:
     "posture_and_body_language": "Standing tall but tense, with a rigid posture that conveys determination.",
     "facial_expression": "A stoic expression with subtle hints of concern.",
     "other_relevant_details": "A faint scar runs along the left cheek, barely visible."
-  }}
+  }},
+  "current_location": "In the corner of the room near the fireplace."
 }}
 
 {moral_guidelines}
