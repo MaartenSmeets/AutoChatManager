@@ -1,100 +1,224 @@
-# Multi-Persona Chatbot
+# Multipersona Chat Manager
 
-![Screenshot from 2025-01-22 21-00-24](https://github.com/user-attachments/assets/9abd0139-3fc7-41d8-a2b5-8eadb2a33c8f)
+The **Multipersona Chat Manager** is a conversational application that simulates a multi-character dialogue using large language model (LLM) backends. It supports dynamic character interactions, automatic chat generation, non-player character (NPC) creation, image prompt generation, conversation summarization, and dynamic plan updates for each character—all integrated into a web‐based interface.
 
-| ![Screenshot 1](https://github.com/user-attachments/assets/2e97038f-69f1-466b-a2f4-f3e74644c447) | ![Screenshot 2](https://github.com/user-attachments/assets/fcb5d55a-bc0f-4bc3-9ca9-84f64a5fcd8d) | ![Screenshot 3](https://github.com/user-attachments/assets/c5168285-68cb-4376-992c-a1875459b85f) |
-|--------------------------------------------------------------|--------------------------------------------------------------|--------------------------------------------------------------|
+## Overview
 
+This project allows you to:
+- **Manage Multiple Characters:** Add and remove characters (both pre-defined “player characters” and dynamically created NPCs) that participate in a conversation.
+- **Automatic Chat:** Run an automatic round-robin chat where each character takes a turn generating dialogue, actions, and internal updates using LLM calls.
+- **NPC Manager:** Dynamically decide—based on recent conversation context—if a new NPC should be created. If so, generate a new character with a unique name, role, appearance, and location.
+- **Image Generation Prompts:** Compose concise scene and character description prompts for external image generation engines. These prompts are built from conversation context and saved to an output folder.
+- **Dynamic Character Plans:** Each character maintains a short-term plan (goal plus sequential steps) that is generated and updated via LLM prompts. Plan changes are stored and tracked.
+- **Conversation Summarization:** As conversations grow longer, chunks of messages are automatically summarized (and old messages hidden) so that the LLM continues to work efficiently while still retaining context.
+- **Dynamic Location & Appearance Updates:** Character locations and appearances are updated by analyzing recent conversation turns using dedicated LLM prompts.
 
-A multi-persona chatbot that uses dynamic location and appearance updates, plan-based story progression, and interactive conversations. Each character maintains individual goals, plans, appearances, and locations while they interact in a shared setting.
+The application uses a SQLite database to persist sessions, messages, summaries, character prompts, and metadata. It also employs [NiceGUI](https://nicegui.io/) to render a modern web interface.
 
-## Features
+## Repository Structure
 
-- **Multiple Characters**  
-  Add and remove multiple characters, each with unique descriptions, fixed traits, and dynamic appearances.
+```
+MultipersonaChatManager/
+├── src/
+│   └── multipersona_chat_app/
+│       ├── chats/                # Chat and conversation management logic
+│       ├── db/                   # SQLite database management for sessions, messages, summaries, etc.
+│       ├── llm/                  # LLM client (Ollama integration) and inference helpers
+│       ├── models/               # Pydantic models for interactions, characters, metadata, etc.
+│       ├── npc_manager.py        # Logic for determining and creating NPCs
+│       ├── image_manager.py      # Image prompt generation (no LLM call, just prompt composition)
+│       ├── templates.py          # Template strings used to form LLM prompts
+│       ├── ui/                   # Web-based user interface built with NiceGUI
+│       └── utils.py              # Utility functions (e.g., settings loading, Markdown cleaning)
+├── output/                      # Output folder for conversation logs, image prompts, and other generated files
+├── requirements.txt             # Python dependencies list
+└── README.md                    # This file
+```
 
-- **Plan-Based Conversations**  
-  Each character has a goal and steps to achieve it, updated in real-time based on the latest dialogue and context.
+## Installation
 
-- **Dynamic Location & Appearance**  
-  Characters can change location or appearance based on their actions or interactions, with minimal transitional actions and rationales automatically generated.
+1. **Clone the Repository:**
 
-- **Summaries to Prevent Chat Overload**  
-  Long chat histories get summarized automatically from a specific character’s point of view to keep the context concise.
-
-- **Automatic or Manual Turn-Taking**  
-  Switch between automatically cycling through each character to respond or manually choose the “Next” speaker.
-
-## Getting Started
-
-1. **Install Dependencies**  
-   Install required Python packages (for example, via `pip`):
-   
+   ```bash
+   git clone https://github.com/your-username/multipersona-chat-manager.git
+   cd multipersona-chat-manager
    ```
+
+2. **Create and Activate a Virtual Environment (Optional but Recommended):**
+
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
+
+3. **Install Dependencies:**
+
+   Make sure you have Python 3.7 or later. Then install the required packages:
+
+   ```bash
    pip install -r requirements.txt
    ```
 
-   Make sure [Ollama](https://ollama.com/) is installed and the model referenced in llm_config.yaml is available.
+4. **Configure the LLM Backend:**
 
-2. **Load or Provide Configuration**  
-   - Place your character definition YAML files under `src/multipersona_chat_app/characters`. Samples are provided so you can easily generate new characters.
-   - Place your settings in `src/multipersona_chat_app/config/settings.yaml`.
-   - The application also uses `llm_config.yaml` and `chat_manager_config.yaml` in the `config` folder for LLM and ChatManager settings.
+   This application uses an LLM (via the [Ollama](https://ollama.com/) API by default) to generate dialogue, plans, and summaries. Ensure that your LLM server is running locally (or adjust the configuration files in `src/multipersona_chat_app/config/` accordingly).
 
-3. **Run the Application**  
-   - From the project’s root folder, run:
-     
-     ```
-     python -m src.multipersona_chat_app.main
-     ```
-     
-   - This launches the NiceGUI server and opens the chat UI in your browser.
+## Running the Application
 
-4. **Using the Chat UI**  
+Start the web interface by running the entry point:
 
-## How to Use the Application Front-End
+```bash
+sh ./run.sh
+```
 
-1. **Launch the Application**:
-   - Run the main Python script to start the front-end UI.
+By default, the NiceGUI server will start on port 8080. Open your web browser and go to:
 
-2. **Select a model**
-   - Click the Refresh models button. This will fetch locally available Ollama models. Select the model you want to use.
+```
+http://localhost:8080
+```
 
-3. **Select or Create a Session**:
-   - Use the session dropdown to load an existing session or create a new one.
+## Using the Web Interface
 
-4. **Add Characters**:
-   - Use the character dropdown to select available characters and click "Add Character" to include them in the session.
+The web interface is divided into two main panels:
 
-5. **Choose a Setting**:
-   - Select a setting from the settings dropdown. The selected setting will define the environment for the characters. Settings are loaded from config/settings.yaml
+### Sidebar (Left Panel)
+- **Session & Model Settings:**
+  - **Session Management:**  
+    - Create a new session, delete the current session, or switch between sessions.
+  - **Model Selection:**  
+    - Choose from a list of available local LLM models and refresh the list.
+  - **Setting Selection:**  
+    - Select a “setting” which provides background details (e.g., environment description, start location) for the conversation.
+- **Toggles:**
+  - **Automatic Chat:**  
+    - Enable automatic round-robin conversation where characters generate messages automatically.
+  - **NPC Manager Active:**  
+    - When enabled, the system periodically checks whether a new NPC should be added based on conversation context.
+  - **Show Private Info:**  
+    - Toggle the display of internal details such as emotions, thoughts, and character plans.
+- **Character Management:**
+  - **Add Character:**  
+    - Choose from a dropdown of available characters to add to the current session.
+  - **Display & Remove Characters:**  
+    - View all added characters and remove any unwanted ones.
+- **Additional Actions:**
+  - **Update All Character Info:**  
+    - Forces a recalculation of all characters’ location and appearance based on the latest conversation.
+  - **Generate Scene Prompt:**  
+    - Generate and save image generation prompts based on the current scene and characters.
 
-6. **View or Update Details**:
-   - View added characters, their location, appearance, and goals in the details panel.
+### Main Chat Area (Right Panel)
+- **Conversation Display:**
+  - Shows the conversation messages in order. Each message displays the speaker’s name (with an appended role for NPCs), a timestamp, and the message content.
+  - If “Show Private Info” is enabled, internal details like emotions and thoughts will also be shown.
+  
+## Detailed Functionality
 
-7. **Start Interaction**:
-   - Use the "Next" button to progress the interaction. Each character will respond sequentially based on their personality and current context.
+### NPC Manager
 
-8. **Automatic Mode**:
-   - Enable automatic mode to let the application progress the interaction continuously.
+- **What It Does:**  
+  Determines whether a new NPC (non-player character) is needed based on the most recent conversation lines and current character roster.
 
-9. **Stop or Reset**:
-   - Stop the interaction at any time and reset or change session configurations as needed.
+- **How It Works:**  
+  - The `NPCManager` class collects recent dialogue and known characters from the session.
+  - It uses specialized system and user prompts (see `NPC_CREATION_SYSTEM_PROMPT` and `NPC_CREATION_USER_PROMPT` in the code) to query the LLM (via the `OllamaClient`).
+  - If the LLM indicates that a new NPC is required, it creates a new character with generated attributes (name, role, appearance, and location) and adds it to the session (both as a character and as metadata in the database).
 
-## Notes
+- **Usage:**  
+  Simply toggle the **NPC Manager Active** switch in the sidebar. The system will then handle NPC creation automatically during the conversation.
 
-- **Database**: All session data is stored in `output/conversations.db`.  
-- **Cache**: LLM calls are cached in `output/llm_cache`. Clearing this will force the application to regenerate responses.  
-- **Logging**: Logs are saved in `output/app.log`.
+### Image Generation Prompts
+
+- **What It Does:**  
+  Constructs concise, descriptive prompts that can be used by external image-generation engines to create visuals of the scene or characters.
+
+- **How It Works:**  
+  - The `ImageManager` class loads a set of template strings and configuration data (from a YAML file) that describe how to structure the prompt.
+  - It fills in these templates with details such as the current setting, moral guidelines, non-NPC character details, recent dialogue, and previous summaries.
+  - Instead of making an LLM call, the composed prompts are saved as text files (e.g., `system_prompt.txt` and `user_prompt.txt`) in the `output/image_prompts` folder.
+
+- **Usage:**  
+  Click the **Generate Scene Prompt** button in the sidebar to produce the image generation prompts.
+
+### Automatic Chat Functionality
+
+- **What It Does:**  
+  Automates the conversation flow by selecting the next speaker (in a round-robin manner) and generating their message using LLM calls.
+
+- **How It Works:**  
+  - When **Automatic Chat** is enabled, a timer triggers periodic calls to the `automatic_conversation()` function.
+  - The `ChatManager` selects the next speaker (skipping NPCs that do not meet certain conditions) and uses their dynamic prompt template—filled with the latest dialogue, summaries, location, and appearance—to generate a new message.
+  - The generated message may include dialogue, an action (displayed in italics), and internal state (emotions, thoughts) if the **Show Private Info** toggle is active.
+  - After a message is generated, the system may also trigger location or appearance update evaluations if indicated by the generated output.
+
+- **Usage:**  
+  Enable the **Automatic Chat** toggle to have characters generate messages automatically at fixed intervals.
+
+### Character Plans
+
+- **What It Does:**  
+  Each character maintains a “plan” that includes a clear goal and a few actionable steps. The plan guides the character’s behavior and may change over time.
+
+- **How It Works:**  
+  - The `ChatManager` uses dedicated LLM prompts (e.g., `PLAN_UPDATE_SYSTEM_PROMPT` and `PLAN_UPDATE_USER_PROMPT`) to generate or update a character’s plan.
+  - Plans are stored in the database and a history of changes is maintained.
+  - If the generated plan is too short or too different, the system retries the LLM call with additional context (such as explaining that the character is alone or with others).
+
+- **Usage:**  
+  Plans are updated automatically as part of the conversation. If you enable **Show Private Info**, the current goal and steps will be visible in the character details pane.
+
+### Conversation Summarization
+
+- **What It Does:**  
+  Summarizes older parts of the conversation to keep the active dialogue concise while still retaining context for later turns.
+
+- **How It Works:**  
+  - When the number of visible messages for a character reaches a preset threshold, a block of messages is selected and sent to the LLM via the `SUMMARIZE_PROMPT`.
+  - The resulting summary is stored in the database and the summarized messages are hidden from the conversation view.
+  - In addition, when enough summaries have accumulated, the system combines them into a single, cohesive summary using a combined summary prompt.
+
+- **Usage:**  
+  This functionality runs automatically based on thresholds defined in the configuration.
+
+### Dynamic Location & Appearance Updates
+
+- **What It Does:**  
+  Evaluates whether a character’s location or appearance has changed based on recent conversation events and updates the database accordingly.
+
+- **How It Works:**  
+  - Specialized LLM prompts (for example, `LOCATION_UPDATE_SYSTEM_PROMPT` and `APPEARANCE_UPDATE_SYSTEM_PROMPT`) are used to analyze the recent dialogue and determine if a character should be shown in a new location or with an updated appearance.
+  - If changes are detected, the new information is saved to the database and a small “transition action” message may be generated.
+
+- **Usage:**  
+  These updates are automatically triggered during conversation turns or when the “Update All Character Info” button is pressed.
+
+## Configuration
+
+All configuration files are found in the `src/multipersona_chat_app/config/` directory. You can adjust:
+- LLM parameters (model names, API URLs, temperature, timeouts)
+- Chat settings (summarization thresholds, auto chat interval, plan retry amounts)
+- Image generation prompt templates
+- Moral guidelines and other stylistic instructions
+
+## Troubleshooting
+
+- **LLM Integration:**  
+  If you receive errors related to LLM calls (e.g., no response or malformed output), verify that your Ollama (or other LLM backend) is running and that the API endpoints in the configuration files are correct.
+  
+- **Session Issues:**  
+  If a session becomes unresponsive or you need to reset character data, you may delete the SQLite database file in the `output/` folder and start a new session.
+
+- **Dependencies:**  
+  Ensure that all required Python packages (listed in `requirements.txt`) are installed and that you are using a supported Python version.
 
 ## Contributing
 
-1. **Pull Requests**  
-   - Fork the repository and create a feature branch.  
-   - Submit pull requests with clear descriptions.
+Contributions are welcome! If you’d like to help improve the project—whether by fixing bugs, adding features, or enhancing documentation—please open an issue or submit a pull request.
 
-2. **Bug Reports**  
-   - Report issues by opening a new GitHub issue.  
-   - Include steps to reproduce and any relevant logs or stack traces.
+## License
 
-We appreciate any feedback and contributions to enhance the chatbot’s features and usability!
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+---
+
+*This README provides a high-level overview and detailed explanation of the Multipersona Chat Manager’s functionality. For more information, consult the inline documentation in the source code.*
