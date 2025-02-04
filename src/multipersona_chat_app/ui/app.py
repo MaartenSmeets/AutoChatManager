@@ -565,15 +565,20 @@ async def refresh_local_models():
     models = llm_client.list_local_models()
     local_model_dropdown.options = models
     local_model_dropdown.update()
-    # Preserve the stored model selection if it is still available.
-    stored = local_model_dropdown.value
-    if stored in models:
+    # Instead of using the dropdown’s current value, read the stored model from session settings.
+    session_settings = chat_manager.db.get_session_settings(chat_manager.session_id)
+    stored = session_settings.get('model_selection', '')
+    if stored and stored in models:
         local_model_dropdown.value = stored
+        on_local_model_select({"value": stored})
+    elif stored:
+        ui.notify(f"Stored model '{stored}' is not available. Reverting to first available model.", type="warning")
+        local_model_dropdown.value = models[0]
+        on_local_model_select({"value": models[0]})
     elif models:
         local_model_dropdown.value = models[0]
         on_local_model_select({"value": models[0]})
     local_model_dropdown.update()
-
 
 def on_local_model_select(event):
     if isinstance(event, dict):
