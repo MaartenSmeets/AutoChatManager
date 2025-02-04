@@ -29,7 +29,7 @@ from typing import Optional
 INPUT_DIR = "./output/image_prompts"
 OUTPUT_DIR = "./output/image_prompts"
 MODEL_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "nchapman/l3.3-70b-euryale-v2.3:latest"# "DaddyLLAMA/behemoth_123b_v1_1:latest"  # or any other model endpoint
+MODEL_NAME = "dolphin-mixtral:8x22b-v2.9-q3_K_S"
 MAX_RETRIES = 10
 TEMPERATURE = 0.6
 
