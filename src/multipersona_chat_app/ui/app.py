@@ -602,6 +602,7 @@ def on_local_model_select(event):
 
 
 def main_page():
+    ui.page_title("AutoChatManager")
     global character_dropdown, added_characters_container
     global settings_dropdown, setting_description_label
     global session_dropdown, chat_display, current_location_label, llm_status_label
