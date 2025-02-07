@@ -20,6 +20,58 @@ This project allows you to:
 
 The application uses a SQLite database to persist sessions, messages, summaries, character prompts, and metadata. It also employs [NiceGUI](https://nicegui.io/) to render a modern web interface.
 
+```mermaid
+flowchart TD
+  %% Frontend / Presentation Layer
+  subgraph FE [User Interface NiceGUI]
+    FE1[Session Management]
+    FE2[Chat Display & Controls]
+    FE3[Character & Model Management]
+  end
+
+  %% Application / Business Logic Layer
+  subgraph BL [Application Layer]
+    CM[ChatManager]
+    NM[NPCManager]
+    IM[ImageManager]
+  end
+
+  %% Backend / Integration Layer
+  subgraph BE [Backend Services]
+    LLM[LLM Service<br/>OllamaClient]
+
+  end
+
+  %% Interactions from Frontend to Business Logic
+  FE1 -->|Selects Session & Settings| CM
+  FE2 -->|Triggers chat updates| CM
+  FE3 -->|Adds/Removes Characters<br/>and selects models| CM
+
+  %% ChatManager interactions
+  CM -->|Generates chat messages,<br/>summaries & plans| LLM
+  CM -->|Delegates NPC creation| NM
+  CM -->|Triggers scene prompt generation| IM
+
+  %% NPC Manager uses LLM & DB
+  NM -->|LLM-based NPC creation| LLM
+
+  %% Styling for clarity
+  style FE1 fill:#cce5ff,stroke:#004085,stroke-width:2px,stroke-dasharray: 5 5
+  style FE2 fill:#cce5ff,stroke:#004085,stroke-width:2px,stroke-dasharray: 5 5
+  style FE3 fill:#cce5ff,stroke:#004085,stroke-width:2px,stroke-dasharray: 5 5
+
+  style CM fill:#d4edda,stroke:#155724,stroke-width:2px
+  style NM fill:#fff3cd,stroke:#856404,stroke-width:2px
+  style IM fill:#f8d7da,stroke:#721c24,stroke-width:2px
+
+  style LLM fill:#fefefe,stroke:#818182,stroke-width:2px
+
+  %% Link styling
+  linkStyle 0,1,2 stroke:#004085, stroke-width:2px
+  linkStyle 3,4,5 stroke:#155724, stroke-width:2px
+
+```
+
 ## Repository Structure
 
 ```
