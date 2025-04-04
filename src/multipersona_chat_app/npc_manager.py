@@ -3,11 +3,13 @@
 import logging
 import asyncio
 import json
-from typing import List, Optional
+import yaml
+from typing import List, Optional, Dict
 from pydantic import BaseModel
 
 from db.db_manager import DBManager
 import utils
+import os
 from llm.ollama_client import OllamaClient
 from models.character import Character
 from models.character_metadata import CharacterMetadata
@@ -19,7 +21,6 @@ from npc_prompts import (
 )
 
 logger = logging.getLogger(__name__)
-
 class NPCCreationOutput(BaseModel):
     should_create_npc: bool
     npc_name: str
@@ -27,8 +28,15 @@ class NPCCreationOutput(BaseModel):
     npc_appearance: str
     npc_location: str
 
+class NPCNameRegenerationOutput(BaseModel):
+    new_name: str
+
 class SameLocationCheck(BaseModel):
     same_location: bool
+
+class NPCConfig(BaseModel):
+    max_name_retries: int = 3  # Default value if not in config
+
 
 class NPCManager:
     """
@@ -41,6 +49,11 @@ class NPCManager:
         self.session_id = session_id
         self.db = db
         self.llm_client = llm_client
+        # Load config
+        config_path = os.path.join("src", "multipersona_chat_app", "config", "npc_manager_config.yaml")
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        self.config = NPCConfig(**config)
 
     async def maybe_create_npc(
         self,
@@ -100,8 +113,31 @@ class NPCManager:
             logger.debug("LLM returned an empty NPC name, skipping creation.")
             return None
 
-        if new_npc_name in known_chars:
-            logger.debug(f"NPC name '{new_npc_name}' already in session; skipping.")
+        # Try to find a unique name
+        characters_dir = os.path.join("src", "multipersona_chat_app", "characters")
+        yaml_characters = utils.get_available_characters(characters_dir)
+        
+        retry_count = 0
+        while (new_npc_name in known_chars or new_npc_name in yaml_characters) and retry_count < self.config.max_name_retries:
+            if new_npc_name in known_chars:
+                logger.debug(f"NPC name '{new_npc_name}' already in session; trying another name.")
+            else:
+                logger.debug(f"NPC name '{new_npc_name}' conflicts with existing YAML character; trying another name.")
+            
+            # Try to generate a new name
+            new_name = await self._regenerate_npc_name(
+                new_npc_name,
+                result.npc_role.strip(),
+                setting_desc,
+                known_chars,
+                yaml_characters
+            )
+            if new_name:
+                new_npc_name = new_name
+            retry_count += 1
+
+        if new_npc_name in known_chars or new_npc_name in yaml_characters:
+            logger.error(f"Failed to generate unique NPC name after {self.config.max_name_retries} attempts")
             return None
 
         # Create a new Character object
@@ -202,3 +238,54 @@ class NPCManager:
             if is_same_loc:
                 return True
         return False
+
+    async def _regenerate_npc_name(
+        self,
+        previous_name: str,
+        role: str,
+        setting_desc: str,
+        known_chars: List[str],
+        yaml_chars: Dict[str, Character]
+    ) -> Optional[str]:
+        """
+        Try to generate a new unique name for an NPC when the previous attempt had conflicts.
+        Returns the new name if successful, None if failed.
+        """
+        from npc_prompts import NPC_NAME_REGENERATION_PROMPT
+
+        # Combine all known characters into a string
+        all_chars = list(set(known_chars) | set(yaml_chars.keys()))
+        known_str = ", ".join(all_chars) if all_chars else "(none)"
+
+        user_prompt = NPC_NAME_REGENERATION_PROMPT.format(
+            previous_name=previous_name,
+            role=role,
+            setting=setting_desc,
+            known_characters=known_str
+        )
+
+        regen_client = OllamaClient(
+            'src/multipersona_chat_app/config/llm_config.yaml',
+            output_model=NPCNameRegenerationOutput
+        )
+        if self.llm_client.user_selected_model:
+            regen_client.set_user_selected_model(self.llm_client.user_selected_model)
+
+        logger.info(f"Attempting to generate new name to replace '{previous_name}'")
+        result = await asyncio.to_thread(
+            regen_client.generate,
+            prompt=user_prompt,
+            system="You are a character name generation assistant.",
+            use_cache=False
+        )
+
+        if not result or not isinstance(result, NPCNameRegenerationOutput):
+            logger.debug("No valid name regeneration output")
+            return None
+
+        new_name = result.new_name.strip()
+        if not new_name:
+            logger.debug("Name regeneration returned empty name")
+            return None
+
+        return new_name

@@ -56,7 +56,7 @@ You are {npc_name}. Your role/purpose: {npc_role}. Your appearance: {npc_appeara
 """
 
 NPC_DYNAMIC_PROMPT_TEMPLATE = r"""
-Generate {character_name}’s next interaction based on the following context:
+Generate {character_name}'s next interaction based on the following context:
 
   CURRENT CONTEXT
   - Setting: {setting}
@@ -68,7 +68,7 @@ Generate {character_name}’s next interaction based on the following context:
   - Latest single action/dialogue: {latest_single_utterance}
 
   PLAN
-  Below is {character_name}’s plan—this hasn’t happened yet but captures their immediate intent:
+  Below is {character_name}'s plan—this hasn't happened yet but captures their immediate intent:
   {character_plan}
 
   INTERACTION GUIDELINES:
@@ -80,11 +80,32 @@ Generate {character_name}’s next interaction based on the following context:
   - Adapt organically to new events, reflecting the character's personality.
   - Base responses on established relationship dynamics with other characters.
   - Maintain authentic character voice as defined by their persona.
-  - Incorporate or reference the next step(s) in the character’s plan.
+  - Incorporate or reference the next step(s) in the character's plan.
   - React to relevant stimuli (e.g., touch, suggestions) and use physical cues consistent with their persona.
   - Reflect the character's current mood and decision-making process.
   - **Ensure all responses are in exact JSON format without Markdown** matching the "Interaction" model.
   - React to and/or further the existing plan in small ways with each new action or dialogue.
 
   Remember to always respond as {character_name}, embodying their defined persona.
+"""
+
+NPC_NAME_REGENERATION_PROMPT = r"""
+You are an assistant tasked with generating an alternative name for an NPC. The previous name had a conflict.
+
+Previous attempted name: {previous_name}
+Role of NPC: {role}
+Setting: {setting}
+
+Current known characters: {known_characters}
+
+Rules for the new name:
+1. Generate a new FIRST NAME ONLY that fits the setting and role
+2. Name must be different from all known characters
+3. Name should be appropriate for the NPC's role
+4. Name should be culturally appropriate for the setting
+
+Output JSON with exactly these keys:
+{{
+  "new_name": "<First name only>"
+}}
 """
